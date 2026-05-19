@@ -1,0 +1,4 @@
+NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/extra/mitmproxy-ca-cert.crt"
+PIP_CERT="/etc/ssl/certs/ca-certificates.crt"
+REQUESTS_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
+SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"

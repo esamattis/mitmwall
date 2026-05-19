@@ -60,6 +60,7 @@ zshenv_file=/etc/zsh/zshenv
 # Resolve the directory containing this installer so files can be copied from
 # the source checkout regardless of the caller's current working directory.
 scriptdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+system_environment_source=$scriptdir/system_enviroment
 
 # Use a temporary workspace for downloaded archives and generated intermediate
 # files. The trap removes the workspace on both success and failure so repeated
@@ -201,15 +202,21 @@ openssl x509 -in "$mitmproxy_confdir/mitmproxy-ca-cert.pem" -inform PEM -out "$c
 update-ca-certificates
 
 # Update /etc/environment and shell startup files with trust-store variables
-# for common runtimes and libraries. The managed marker block makes the files
-# idempotent: on each install, the old mitmwall block is removed and a fresh one
-# is appended without disturbing unrelated environment settings.
+# for common runtimes and libraries. Read the variable definitions from the
+# repository-managed system_enviroment file so the list exists outside this
+# installer. The managed marker block makes the files idempotent: on each
+# install, the old mitmwall block is removed and a fresh one is appended without
+# disturbing unrelated environment settings.
+if [ ! -f "$system_environment_source" ]; then
+    echo "install.sh: missing system environment source: $system_environment_source" >&2
+    exit 1
+fi
+
+environment_values=$(cat "$system_environment_source")
+
 environment_block=$(cat <<EOF
 # mitmwall-start
-NODE_EXTRA_CA_CERTS="$ca_cert_file"
-PIP_CERT="$ca_bundle_file"
-REQUESTS_CA_BUNDLE="$ca_bundle_file"
-SSL_CERT_FILE="$ca_bundle_file"
+$environment_values
 # mitmwall-end
 EOF
 )
