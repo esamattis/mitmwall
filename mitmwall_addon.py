@@ -22,29 +22,19 @@ import tomllib
 from mitmproxy import ctx, http
 
 RULES_PATH = Path("/opt/mitmwall/rules.toml")
-LOGS_DIR = Path("/opt/mitmwall/logs")
-LOG_PATH = LOGS_DIR / "mitmwall.log"
 LOGGER = logging.getLogger("mitmwall")
 LOGGER.setLevel(logging.DEBUG)
 LOGGER.propagate = False
 
 
-def setup_file_logging() -> Exception | None:
+def setup_logging() -> None:
+    """Send addon logs to stderr so systemd journal captures them."""
     if LOGGER.handlers:
-        return None
-
-    try:
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
-        LOGS_DIR.chmod(0o700)
-        handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
-        handler.setLevel(logging.DEBUG)
-        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-        LOGGER.addHandler(handler)
-        LOG_PATH.chmod(0o600)
-    except Exception as exc:
-        return exc
-
-    return None
+        return
+    handler = logging.StreamHandler()
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    LOGGER.addHandler(handler)
 
 
 @dataclass(frozen=True)
@@ -172,14 +162,9 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
 class Mitmwall:
     def __init__(self) -> None:
         self.rules: list[Rule] = []
-        self.file_logging_error = setup_file_logging()
+        setup_logging()
 
     def load(self, loader) -> None:  # noqa: ANN001 - mitmproxy controls this signature.
-        if self.file_logging_error is not None:
-            ctx.log.error(
-                f"mitmwall: failed to open log file {LOG_PATH}: "
-                f"{self.file_logging_error}"
-            )
         self.log_info("addon loaded")
         self.reload_rules()
 

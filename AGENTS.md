@@ -13,7 +13,6 @@ After changes install with ./dev-install.sh
 
 test with ./test.sh
 
-See logs in
+See logs with:
 
-/var/log/mitmwall.log
-/var/log/mitmweb.log
+  sudo journalctl -u mitmwall

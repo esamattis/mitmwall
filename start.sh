@@ -20,5 +20,4 @@ exec "$bindir/mitmweb" \
   --web-port 58081 \
   --mode transparent \
   --showhost \
-  -s "$optdir/mitmwall_addon.py" \
-  >>"$optdir/logs/mitmweb.log" 2>&1
+  -s "$optdir/mitmwall_addon.py"

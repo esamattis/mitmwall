@@ -68,6 +68,12 @@ Start again with
 sudo systemctl start mitmwall
 ```
 
+View logs:
+
+```console
+sudo journalctl -u mitmwall.service -f
+```
+
 ## Allowlist rules
 
 Rules are stored in `/opt/mitmwall/rules.toml`. The file is TOML and contains
@@ -105,23 +111,6 @@ After editing `/opt/mitmwall/rules.toml`, restart the service:
 sudo systemctl restart mitmwall
 ```
 
-## Logs
-
-mitmwall writes logs under:
-
-```text
-# The plugin logs
-/opt/mitmwall/logs/mitmwall.log
-
-# The mitmweb logs
-/opt/mitmwall/logs/mitmweb.log
-```
-
-The main service can also be inspected through systemd:
-
-```console
-sudo journalctl -u mitmwall
-```
 
 ## System environment variables
 

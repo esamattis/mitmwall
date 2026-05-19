@@ -80,18 +80,14 @@ fi
 
 # Create /opt/mitmwall and the private runtime directories. The top-level and
 # binary directories are world-readable/executable so systemd can locate scripts
-# and mitmproxy binaries, while logs and mitmproxy state are kept private because
-# they may include requested hosts, proxy details, generated CA keys, and the web
-# UI password.
+# and mitmproxy binaries, while mitmproxy state is kept private because it may
+# include generated CA keys and the web UI password. Service logs are handled by
+# systemd journal.
 install -d -m 0755 "$optdir" "$bindir"
 if [ -e "$mitmproxy_confdir" ] && [ ! -d "$mitmproxy_confdir" ]; then
     rm -f "$mitmproxy_confdir"
 fi
-install -d -o "$user" -m 0700 "$optdir/logs" "$mitmproxy_confdir"
-
-# Ensure the log files exist before service startup. They are owned by the
-# mitmwall user so the unprivileged service can append to them without root.
-touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
+install -d -o "$user" -m 0700 "$mitmproxy_confdir"
 
 # Move installations that used /opt/mitmwall/mitmweb.yaml to the mitmproxy
 # confdir. mitmproxy automatically loads config.yaml from confdir, and keeping
@@ -112,13 +108,12 @@ if [ ! -f "$mitmweb_config_file" ]; then
     printf 'web_password: "%s"\n' "$password" >"$mitmweb_config_file"
 fi
 
-# Lock down ownership and permissions for runtime state. Logs and the mitmweb
-# confdir are readable only by the mitmwall user/root, preventing other local
-# users from reading traffic metadata, generated CA keys, or the generated admin
-# password.
-chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$mitmproxy_confdir" "$mitmweb_config_file"
-chmod 0700 "$optdir/logs" "$mitmproxy_confdir"
-chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$mitmweb_config_file"
+# Lock down ownership and permissions for runtime state. The mitmweb confdir is
+# readable only by the mitmwall user/root, preventing other local users from
+# reading generated CA keys or the generated admin password.
+chown "$user" "$mitmproxy_confdir" "$mitmweb_config_file"
+chmod 0700 "$mitmproxy_confdir"
+chmod 0600 "$mitmweb_config_file"
 
 # Install the helper scripts used by systemd. add-iptables.sh and
 # clear-iptables.sh are run as privileged ExecStartPre/ExecStopPost hooks, while
