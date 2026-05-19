@@ -4,7 +4,7 @@ set -eu
 
 # This installer is safe to run multiple times. Re-running it updates managed
 # files and binaries while preserving local runtime state such as rules.toml,
-# web_password.txt, and generated mitmproxy CA material.
+# mitmweb.yaml, and generated mitmproxy CA material.
 
 # This installer must run as root because it creates a dedicated system user,
 # writes under /opt, installs a systemd unit, updates trusted CA certificates,
@@ -49,6 +49,7 @@ esac
 optdir=/opt/mitmwall
 bindir=$optdir
 mitmproxy_confdir=/home/$user/.mitmproxy
+mitmweb_config_file=$optdir/mitmweb.yaml
 servicefile=/etc/systemd/system/mitmwall.service
 ca_cert_dir=/usr/local/share/ca-certificates/extra
 ca_cert_file=$ca_cert_dir/mitmproxy-ca-cert.crt
@@ -85,21 +86,23 @@ install -d -o "$user" -m 0700 "$optdir/logs"
 # mitmwall user so the unprivileged service can append to them without root.
 touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
 
-# Generate the mitmweb UI password once during installation. Keeping the file if
+# Generate mitmweb's YAML config once during installation. Keeping the file if
 # it already exists avoids changing the web UI password on every reinstall or
-# service restart. The restrictive umask prevents the password from being
-# briefly created with broader permissions.
-if [ ! -f "$optdir/web_password.txt" ]; then
+# service restart.
+if [ ! -f "$mitmweb_config_file" ]; then
+    # Keep the generated password private from the moment the file is created.
+    # Without this, the file could briefly be world-readable before chmod below.
     umask 077
-    openssl rand -base64 32 >"$optdir/web_password.txt"
+    password=$(openssl rand -base64 32)
+    printf 'web_password: "%s"\n' "$password" >"$mitmweb_config_file"
 fi
 
-# Lock down ownership and permissions for runtime state. Logs and the web UI
-# password are readable only by the mitmwall user/root, preventing other local
+# Lock down ownership and permissions for runtime state. Logs and the mitmweb
+# config are readable only by the mitmwall user/root, preventing other local
 # users from reading traffic metadata or the generated admin password.
-chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
-chmod 0700 "$optdir/logs"
-chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
+chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$mitmweb_config_file"
+chmod 0700 "$optdir/logs" "$mitmproxy_confdir"
+chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$mitmweb_config_file"
 
 # Install the helper scripts used by systemd. add-iptables.sh and
 # clear-iptables.sh are run as privileged ExecStartPre/ExecStopPost hooks, while

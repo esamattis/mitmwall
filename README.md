@@ -136,8 +136,8 @@ traffic.
 
 mitmweb listens on port `58081`.
 
-The password can be viewed as an administrator:
+The password can be viewed as an administrator from the generated mitmweb config:
 
 ```console
-sudo cat /opt/mitmwall/web_password.txt
+sudo grep '^web_password:' /opt/mitmwall/mitmweb.yaml
 ```
