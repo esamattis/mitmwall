@@ -29,6 +29,9 @@ optdir=/opt/mitmwall
 bindir=$optdir
 mitmproxy_confdir=/home/$user/.mitmproxy
 servicefile=/etc/systemd/system/mitmwall.service
+ca_cert_dir=/usr/local/share/ca-certificates/extra
+ca_cert_file=$ca_cert_dir/mitmproxy-ca-cert.crt
+environment_file=/etc/environment
 scriptdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 tmpdir=$(mktemp -d)
@@ -40,10 +43,10 @@ fi
 
 install -d -m 0755 "$optdir"
 install -d -o "$user" -m 0700 "$optdir/logs"
-touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
-chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
+touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
+chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
 chmod 0700 "$optdir/logs"
-chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
+chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
 install -m 0755 "$scriptdir/add-iptables.sh" "$scriptdir/clear-iptables.sh" "$scriptdir/start.sh" "$optdir/"
 install -m 0644 "$scriptdir/mitmwall_addon.py" "$optdir/"
 if [ ! -f "$optdir/rules.toml" ]; then
@@ -106,9 +109,21 @@ if [ ! -f "$mitmproxy_confdir/mitmproxy-ca-cert.pem" ]; then
     fi
 fi
 
-mkdir -p /usr/local/share/ca-certificates/extra
-openssl x509 -in "$mitmproxy_confdir/mitmproxy-ca-cert.pem" -inform PEM -out /usr/local/share/ca-certificates/extra/mitmproxy-ca-cert.crt
+mkdir -p "$ca_cert_dir"
+openssl x509 -in "$mitmproxy_confdir/mitmproxy-ca-cert.pem" -inform PEM -out "$ca_cert_file"
 update-ca-certificates
+
+environment_source=/dev/null
+if [ -f "$environment_file" ]; then
+    environment_source=$environment_file
+fi
+sed '/^# mitmwall-start$/,/^# mitmwall-end$/d' "$environment_source" >"$tmpdir/environment"
+cat >>"$tmpdir/environment" <<EOF
+# mitmwall-start
+NODE_EXTRA_CA_CERTS="$ca_cert_file"
+# mitmwall-end
+EOF
+install -m 0644 "$tmpdir/environment" "$environment_file"
 
 cat <<EOF
 
