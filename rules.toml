@@ -16,3 +16,9 @@ include_subdomains = true
 
 [[allow]]
 domain_regex = '(^|\.)ipinfo\.io$'
+
+[[allow]]
+domain = "index.crates.io"
+
+[[allow]]
+domain = "registry.npmjs.org"
