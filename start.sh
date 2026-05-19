@@ -13,6 +13,11 @@ fi
 
 password=$(cat "$password_file")
 
+# Write password to config file so it doesn't appear in ps output
+config_file="$confdir/config.yaml"
+mkdir -p "$confdir"
+printf 'web_password: "%s"\n' "$password" > "$config_file"
+chmod 600 "$config_file"
 
 echo "Starting mitmwall..."
 
@@ -20,7 +25,6 @@ exec "$bindir/mitmweb" \
   --set confdir="$confdir" \
   --listen-port 58080 \
   --web-port 58081 \
-  --set web_password="$password" \
   --mode transparent \
   --showhost \
   -s "$bindir/mitmwall_addon.py" \
