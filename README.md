@@ -128,14 +128,9 @@ sudo journalctl -u mitmwall
 The installer reads the plain env file [`system_enviroment`](system_enviroment)
 to build the mitmwall-managed CA environment block written to `/etc/environment`
 and `/etc/profile.d/mitmwall.sh`. These variables point common runtimes and TLS
-libraries, including Node.js, pip, Python Requests, and OpenSSL-based tools, at
-the mitmproxy CA certificate or the rebuilt system CA bundle so HTTPS clients can
-trust certificates generated while mitmwall is intercepting traffic.
-
-`system_enviroment` is read as data, not sourced as shell code. Keep it as
-literal `KEY="value"` entries, and update it when mitmwall needs to add, remove,
-or change the system-wide CA-related environment variables installed by
-`install.sh`.
+libraries, at the mitmproxy CA certificate or the rebuilt system CA bundle so
+HTTPS clients can trust certificates generated while mitmwall is intercepting
+traffic.
 
 ## Web interface
 

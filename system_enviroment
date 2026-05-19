@@ -1,4 +1,10 @@
+# Node.js
 NODE_EXTRA_CA_CERTS="/usr/local/share/ca-certificates/extra/mitmproxy-ca-cert.crt"
-PIP_CERT="/etc/ssl/certs/ca-certificates.crt"
-REQUESTS_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
+
+# Catch-all for statically-linked binaries and tools that can't find the
+# system trust store automatically
 SSL_CERT_FILE="/etc/ssl/certs/ca-certificates.crt"
+
+# Python requests/httpx in virtualenvs where the real certifi (not Ubuntu's
+# patched one) ships its own embedded bundle
+REQUESTS_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
