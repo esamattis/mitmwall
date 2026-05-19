@@ -173,3 +173,19 @@ The main service can also be inspected through systemd:
 ```console
 sudo journalctl -u mitmwall
 ```
+
+## Web interface
+
+mitmweb listens on port `58081`.
+
+Each time `mitmwall` starts, it generates a new web UI password and writes it to:
+
+```text
+/opt/mitmwall/web_password.txt
+```
+
+The password file is readable only by `root` and the `mitmwall` user. To view it as an administrator:
+
+```console
+sudo cat /opt/mitmwall/web_password.txt
+```

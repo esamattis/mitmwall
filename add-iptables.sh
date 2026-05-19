@@ -9,6 +9,7 @@ fi
 
 user=mitmwall
 proxy_port=58080
+web_port=58081
 
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
@@ -16,7 +17,7 @@ proxy_port=58080
 # - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
 # - Allow the proxy user to make outbound upstream connections.
-# - Allow other users to connect only to the local proxy port on this host.
+# - Allow other users to connect only to the local proxy and web UI ports on this host.
 # - Allow outbound DNS lookups so clients can resolve hostnames.
 # - Drop all other new outbound traffic so applications cannot bypass the proxy.
 
@@ -38,7 +39,8 @@ add_redirect_rule() {
 # Enforce the outbound allowlist. Established/related packets are allowed so
 # replies from inbound connections (for example SSH) are not broken. The proxy
 # user is allowed to reach the network, clients are allowed to reach the local
-# proxy on this host and DNS, and every other new outbound connection is blocked.
+# proxy and web UI on this host and DNS, and every other new outbound connection
+# is blocked.
 add_output_filter() {
     table_cmd=$1
     chain=MITMWALL_OUTPUT
@@ -51,6 +53,7 @@ add_output_filter() {
     "$table_cmd" -t filter -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner "$user" -j ACCEPT
     "$table_cmd" -t filter -A "$chain" -p tcp --dport "$proxy_port" -m addrtype --dst-type LOCAL -j ACCEPT
+    "$table_cmd" -t filter -A "$chain" -p tcp --dport "$web_port" -m addrtype --dst-type LOCAL -j ACCEPT
     "$table_cmd" -t filter -A "$chain" -p udp --dport 53 -j ACCEPT
     "$table_cmd" -t filter -A "$chain" -p tcp --dport 53 -j ACCEPT
     "$table_cmd" -t filter -A "$chain" -j DROP
