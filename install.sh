@@ -39,15 +39,18 @@ if ! id "$user" >/dev/null 2>&1; then
 fi
 
 install -d -m 0755 "$optdir"
-install -d -o "$user" -m 0755 "$optdir/logs"
+install -d -o "$user" -m 0700 "$optdir/logs"
 touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
-chown "$user" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
-chmod 0644 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
+chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
+chmod 0700 "$optdir/logs"
+chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
 install -m 0755 "$scriptdir/add-iptables.sh" "$scriptdir/clear-iptables.sh" "$scriptdir/start.sh" "$optdir/"
 install -m 0644 "$scriptdir/mitmwall_addon.py" "$optdir/"
 if [ ! -f "$optdir/rules.toml" ]; then
-    install -m 0644 "$scriptdir/rules.toml" "$optdir/rules.toml"
+    install -o "$user" -m 0600 "$scriptdir/rules.toml" "$optdir/rules.toml"
 fi
+chown "$user" "$optdir/rules.toml"
+chmod 0600 "$optdir/rules.toml"
 
 cat >"$servicefile" <<EOF
 [Unit]

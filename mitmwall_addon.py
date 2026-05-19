@@ -35,11 +35,12 @@ def setup_file_logging() -> Exception | None:
 
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        LOGS_DIR.chmod(0o700)
         handler = logging.FileHandler(LOG_PATH, encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         LOGGER.addHandler(handler)
-        LOG_PATH.chmod(0o644)
+        LOG_PATH.chmod(0o600)
     except Exception as exc:
         return exc
 
