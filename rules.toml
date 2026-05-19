@@ -1,0 +1,18 @@
+# mitmwall allow rules
+# Installed to /opt/mitmwall/rules.toml.
+# Traffic is blocked unless the destination host matches one of these rules.
+
+[[allow]]
+domain = "github.com"
+include_subdomains = false
+
+[[allow]]
+domain = "downloads.mitmproxy.org"
+include_subdomains = false
+
+[[allow]]
+domain = "esamatti.fi"
+include_subdomains = true
+
+[[allow]]
+domain_regex = '(^|\.)ipinfo\.io$'
