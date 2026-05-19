@@ -22,3 +22,9 @@ domain = "index.crates.io"
 
 [[allow]]
 domain = "registry.npmjs.org"
+
+[[allow]]
+domain = "pypi.org"
+
+[[allow]]
+domain = "files.pythonhosted.org"
