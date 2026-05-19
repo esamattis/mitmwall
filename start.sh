@@ -6,10 +6,13 @@ bindir=/opt/mitmwall
 confdir=/home/mitmwall/.mitmproxy
 password_file=$bindir/web_password.txt
 
-password=$(openssl rand -base64 32)
-umask 077
-printf '%s\n' "$password" >"$password_file"
-chmod 0600 "$password_file"
+if [ ! -r "$password_file" ]; then
+    echo "start.sh: missing password file: $password_file" >&2
+    exit 1
+fi
+
+password=$(cat "$password_file")
+
 
 echo "Starting mitmwall..."
 
