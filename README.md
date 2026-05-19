@@ -178,13 +178,7 @@ sudo journalctl -u mitmwall
 
 mitmweb listens on port `58081`.
 
-Each time `mitmwall` starts, it generates a new web UI password and writes it to:
-
-```text
-/opt/mitmwall/web_password.txt
-```
-
-The password file is readable only by `root` and the `mitmwall` user. To view it as an administrator:
+The password can be viewed as an administrator:
 
 ```console
 sudo cat /opt/mitmwall/web_password.txt

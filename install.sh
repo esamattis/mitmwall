@@ -2,17 +2,34 @@
 
 set -eu
 
+# This installer is safe to run multiple times. Re-running it updates managed
+# files and binaries while preserving local runtime state such as rules.toml,
+# web_password.txt, and generated mitmproxy CA material.
+
+# This installer must run as root because it creates a dedicated system user,
+# writes under /opt, installs a systemd unit, updates trusted CA certificates,
+# and writes environment variables to /etc/environment.
 if [ "$(id -u)" -ne 0 ]; then
     echo "install.sh: must be run as root" >&2
     exit 1
 fi
 
+# mitmwall is managed as a systemd service. Refuse to continue on systems where
+# systemctl is not available, because the generated service file and reload step
+# would not be useful there.
 if ! command -v systemctl >/dev/null 2>&1; then
     echo "install.sh: systemd is required" >&2
     exit 1
 fi
 
+# The service runs as an unprivileged dedicated user. Keeping mitmproxy and the
+# addon out of root's runtime context reduces the blast radius if either the web
+# UI or proxy process is compromised.
 user=mitmwall
+
+# Select the prebuilt mitmproxy archive that matches the host CPU architecture.
+# Unsupported architectures stop here instead of downloading an incompatible
+# binary that would fail later during service startup.
 case "$(uname -m)" in
     x86_64|amd64)
         url=https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-x86_64.tar.gz
@@ -25,36 +42,85 @@ case "$(uname -m)" in
         exit 1
         ;;
 esac
+
+# Centralized installation paths. Everything that belongs to mitmwall itself is
+# kept under /opt/mitmwall, while OS integration points live in their standard
+# system locations.
 optdir=/opt/mitmwall
 bindir=$optdir
 mitmproxy_confdir=/home/$user/.mitmproxy
 servicefile=/etc/systemd/system/mitmwall.service
 ca_cert_dir=/usr/local/share/ca-certificates/extra
 ca_cert_file=$ca_cert_dir/mitmproxy-ca-cert.crt
+ca_bundle_file=/etc/ssl/certs/ca-certificates.crt
 environment_file=/etc/environment
+profile_file=/etc/profile.d/mitmwall.sh
+zshenv_file=/etc/zsh/zshenv
+
+# Resolve the directory containing this installer so files can be copied from
+# the source checkout regardless of the caller's current working directory.
 scriptdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
+# Use a temporary workspace for downloaded archives and generated intermediate
+# files. The trap removes the workspace on both success and failure so repeated
+# installs do not leave stale tarballs behind.
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
+# Create the dedicated runtime user if it does not already exist. The home
+# directory is needed because mitmproxy stores its generated CA material under
+# /home/mitmwall/.mitmproxy.
 if ! id "$user" >/dev/null 2>&1; then
     useradd --create-home "$user"
 fi
 
+# Create /opt/mitmwall and the private log directory. The top-level directory is
+# world-readable/executable so systemd can locate scripts, while logs are kept
+# private because they may include requested hosts and proxy details.
 install -d -m 0755 "$optdir"
 install -d -o "$user" -m 0700 "$optdir/logs"
-touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
+
+# Ensure the log files exist before service startup. They are owned by the
+# mitmwall user so the unprivileged service can append to them without root.
+touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
+
+# Generate the mitmweb UI password once during installation. Keeping the file if
+# it already exists avoids changing the web UI password on every reinstall or
+# service restart. The restrictive umask prevents the password from being
+# briefly created with broader permissions.
+if [ ! -f "$optdir/web_password.txt" ]; then
+    umask 077
+    openssl rand -base64 32 >"$optdir/web_password.txt"
+fi
+
+# Lock down ownership and permissions for runtime state. Logs and the web UI
+# password are readable only by the mitmwall user/root, preventing other local
+# users from reading traffic metadata or the generated admin password.
 chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
 chmod 0700 "$optdir/logs"
 chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$optdir/web_password.txt"
+
+# Install the helper scripts used by systemd. add-iptables.sh and
+# clear-iptables.sh are run as privileged ExecStartPre/ExecStopPost hooks, while
+# start.sh launches mitmweb as the unprivileged mitmwall user.
 install -m 0755 "$scriptdir/add-iptables.sh" "$scriptdir/clear-iptables.sh" "$scriptdir/start.sh" "$optdir/"
+
+# Install the mitmproxy addon that enforces the allow/block rules.
 install -m 0644 "$scriptdir/mitmwall_addon.py" "$optdir/"
+
+# Install the default rules file only on first install. Existing rules are
+# preserved so local policy changes are not overwritten by upgrades or reruns of
+# this installer.
 if [ ! -f "$optdir/rules.toml" ]; then
     install -o "$user" -m 0600 "$scriptdir/rules.toml" "$optdir/rules.toml"
 fi
 chown "$user" "$optdir/rules.toml"
 chmod 0600 "$optdir/rules.toml"
 
+# Register the systemd service. The iptables hooks are prefixed with '+' so they
+# run with elevated privileges even though the main service process runs as the
+# unprivileged mitmwall user. The service waits for network-online.target because
+# transparent proxying depends on networking being configured.
 cat >"$servicefile" <<EOF
 [Unit]
 Description=mitmwall transparent mitmproxy service
@@ -73,8 +139,12 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
+# Tell systemd to reload unit definitions so the newly written/updated service
+# file is visible to systemctl without requiring a reboot.
 systemctl daemon-reload
 
+# Download the selected mitmproxy archive. Prefer curl when available, with wget
+# as a fallback, and stop with a clear error if neither downloader is installed.
 if command -v curl >/dev/null 2>&1; then
     curl -fsSL "$url" -o "$tmpdir/mitmproxy.tar.gz"
 elif command -v wget >/dev/null 2>&1; then
@@ -84,8 +154,15 @@ else
     exit 1
 fi
 
+# Unpack the downloaded archive into the temporary workspace. The following
+# install loop searches both the archive root and one nested directory because
+# release archive layouts can vary.
 tar -xzf "$tmpdir/mitmproxy.tar.gz" -C "$tmpdir"
 
+# Copy every executable mitm* binary from the archive into /opt/mitmwall. This
+# includes mitmweb, mitmdump, mitmproxy, and any companion binaries shipped by
+# the release. Track whether anything was installed so archive/layout problems
+# are caught immediately.
 installed=0
 for binary in "$tmpdir"/mitm* "$tmpdir"/*/mitm*; do
     if [ -f "$binary" ] && [ -x "$binary" ]; then
@@ -94,13 +171,19 @@ for binary in "$tmpdir"/mitm* "$tmpdir"/*/mitm*; do
     fi
 done
 
+# Fail loudly if the archive did not contain executable mitm* binaries. Without
+# this check, the service could be installed but fail later with a missing
+# mitmweb/mitmdump executable.
 if [ "$installed" -eq 0 ]; then
     echo "install.sh: no mitm* binaries found in downloaded archive" >&2
     exit 1
 fi
 
+# Generate mitmproxy's local certificate authority if it does not already exist.
+# mitmproxy creates the CA bundle lazily on first startup, so this runs mitmdump
+# in a no-server mode as the mitmwall user to create the files with the correct
+# ownership and under the correct confdir.
 if [ ! -f "$mitmproxy_confdir/mitmproxy-ca-cert.pem" ]; then
-    # generate mitmproxy CA certificates
     echo "generating mitmproxy CA certificates"
     if command -v runuser >/dev/null 2>&1; then
         runuser -u "$user" -- "$bindir/mitmdump" --set confdir="$mitmproxy_confdir" --no-server --rfile /dev/null
@@ -109,22 +192,55 @@ if [ ! -f "$mitmproxy_confdir/mitmproxy-ca-cert.pem" ]; then
     fi
 fi
 
+# Install the generated mitmproxy CA certificate into the system trust store.
+# This lets local tools trust TLS certificates generated by mitmproxy while
+# traffic is transparently intercepted. update-ca-certificates rebuilds the OS
+# CA bundle after the new certificate is written.
 mkdir -p "$ca_cert_dir"
 openssl x509 -in "$mitmproxy_confdir/mitmproxy-ca-cert.pem" -inform PEM -out "$ca_cert_file"
 update-ca-certificates
 
+# Update /etc/environment and shell startup files with trust-store variables
+# for common runtimes and libraries. The managed marker block makes the files
+# idempotent: on each install, the old mitmwall block is removed and a fresh one
+# is appended without disturbing unrelated environment settings.
+environment_block=$(cat <<EOF
+# mitmwall-start
+NODE_EXTRA_CA_CERTS="$ca_cert_file"
+PIP_CERT="$ca_bundle_file"
+REQUESTS_CA_BUNDLE="$ca_bundle_file"
+SSL_CERT_FILE="$ca_bundle_file"
+# mitmwall-end
+EOF
+)
+
+# Shell startup files need export prefixes, unlike /etc/environment. Derive this
+# from the same block so the variable list only exists in one place.
+shell_environment_block=$(printf '%s\n' "$environment_block" | sed '/^[A-Za-z_][A-Za-z0-9_]*=/s/^/export /')
+
+# Start from /dev/null when /etc/environment does not exist so the same sed
+# pipeline can be used for both fresh installs and updates.
 environment_source=/dev/null
 if [ -f "$environment_file" ]; then
     environment_source=$environment_file
 fi
+
+# Remove any previously managed block before appending the current values. This
+# keeps repeated installs from accumulating duplicate mitmwall settings.
 sed '/^# mitmwall-start$/,/^# mitmwall-end$/d' "$environment_source" >"$tmpdir/environment"
-cat >>"$tmpdir/environment" <<EOF
-# mitmwall-start
-NODE_EXTRA_CA_CERTS="$ca_cert_file"
-# mitmwall-end
-EOF
+printf '%s\n' "$environment_block" >>"$tmpdir/environment"
 install -m 0644 "$tmpdir/environment" "$environment_file"
 
+# /etc/environment is read by PAM at login time, but POSIX-style login shells
+# also source /etc/profile.d/*.sh. Write the same values there so new sh/bash
+# sessions can pick them up.
+printf '%s\n' "$shell_environment_block" >"$tmpdir/profile"
+install -d -m 0755 /etc/profile.d
+install -m 0644 "$tmpdir/profile" "$profile_file"
+
+# Print next-step commands instead of enabling or starting the service
+# automatically. This keeps installation side effects explicit and lets the
+# operator decide when mitmwall should begin changing network traffic.
 cat <<EOF
 
 mitmwall installed successfully.
@@ -143,5 +259,8 @@ To stop mitmwall:
 
 To check mitmwall status:
   sudo systemctl status mitmwall
+
+To load mitmwall CA environment variables in your current shell:
+  . /etc/profile.d/mitmwall.sh
 
 EOF
