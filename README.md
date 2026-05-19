@@ -109,14 +109,12 @@ sudo systemctl restart mitmwall
 mitmwall writes logs under:
 
 ```text
-/opt/mitmwall/logs/
+# The plugin logs
+/opt/mitmwall/logs/mitmwall.log
+
+# The mitmweb logs
+/opt/mitmwall/logs/mitmweb.log
 ```
-
-Important files:
-
-- `/opt/mitmwall/logs/mitmwall.log` — allowlist loading, allowed requests, and
-  blocked requests.
-- `/opt/mitmwall/logs/mitmweb.log` — mitmweb/mitmproxy process output.
 
 The main service can also be inspected through systemd:
 
