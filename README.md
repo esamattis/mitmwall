@@ -69,84 +69,34 @@ sudo systemctl start mitmwall
 
 ## Allowlist rules
 
-Rules are stored in:
-
-```text
-/opt/mitmwall/rules.toml
-```
-
-The file is TOML. It contains zero or more `[[allow]]` tables. Traffic is blocked
-unless the request hostname matches at least one allow rule.
-
-### Exact domain rule
+Rules are stored in `/opt/mitmwall/rules.toml`. The file is TOML and contains
+zero or more `[[allow]]` tables. Traffic is blocked unless the request hostname
+matches at least one allow rule.
 
 ```toml
+# Each [[allow]] table must use exactly one of:
+# - domain: a non-empty hostname string
+# - domain_regex: a non-empty Python regular expression string
+#
+# include_subdomains is optional, valid only with domain, and defaults to false.
+# Unsupported keys are rejected. A rule cannot contain both domain and domain_regex.
+# Hostnames are normalized before matching by trimming whitespace, removing a
+# trailing dot, and lowercasing.
+
+# Exact domain only: allows github.com, but not api.github.com.
 [[allow]]
 domain = "github.com"
 include_subdomains = false
-```
 
-This allows only `github.com`. It does not allow `api.github.com` or
-`www.github.com`.
-
-### Domain with subdomains
-
-```toml
+# Domain and all subdomains: allows example.com and api.example.com.
 [[allow]]
 domain = "example.com"
 include_subdomains = true
-```
 
-This allows `example.com` and any subdomain, such as `api.example.com` or
-`downloads.example.com`.
-
-### Regular expression rule
-
-```toml
+# Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
 domain_regex = '(^|\.)ipinfo\.io$'
 ```
-
-This allows any hostname matched by the Python regular expression. Regex rules
-are compiled case-insensitively and are matched against the normalized hostname.
-
-### Full example
-
-```toml
-# /opt/mitmwall/rules.toml
-
-[[allow]]
-domain = "github.com"
-include_subdomains = true
-
-[[allow]]
-domain = "downloads.mitmproxy.org"
-include_subdomains = false
-
-[[allow]]
-domain = "esamatti.fi"
-include_subdomains = false
-
-[[allow]]
-domain_regex = '(^|\.)ipinfo\.io$'
-```
-
-### Rule format reference
-
-Each `[[allow]]` table must use exactly one of:
-
-- `domain`: a non-empty hostname string.
-- `domain_regex`: a non-empty Python regular expression string.
-
-Optional keys:
-
-- `include_subdomains`: boolean, only valid with `domain`; defaults to `false`.
-
-Unsupported keys are rejected. A rule cannot contain both `domain` and
-`domain_regex`.
-
-Hostnames are normalized before matching by trimming whitespace, removing a
-trailing dot, and lowercasing.
 
 After editing `/opt/mitmwall/rules.toml`, restart the service:
 
