@@ -3,7 +3,9 @@
 set -eu
 
 optdir=/opt/mitmwall
-config_file=$optdir/mitmweb.yaml
+bindir=$optdir/bin
+confdir=$optdir/mitmweb
+config_file=$confdir/config.yaml
 
 if [ ! -r "$config_file" ]; then
     echo "start.sh: missing mitmweb config: $config_file" >&2
@@ -12,7 +14,7 @@ fi
 
 echo "Starting mitmwall..."
 
-exec "$optdir/mitmweb" \
+exec "$bindir/mitmweb" \
   --set confdir="$confdir" \
   --listen-port 58080 \
   --web-port 58081 \

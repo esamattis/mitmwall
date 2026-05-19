@@ -4,7 +4,7 @@ set -eu
 
 # This installer is safe to run multiple times. Re-running it updates managed
 # files and binaries while preserving local runtime state such as rules.toml,
-# mitmweb.yaml, and generated mitmproxy CA material.
+# mitmweb/config.yaml, and generated mitmproxy CA material.
 
 # This installer must run as root because it creates a dedicated system user,
 # writes under /opt, installs a systemd unit, updates trusted CA certificates,
@@ -47,9 +47,10 @@ esac
 # kept under /opt/mitmwall, while OS integration points live in their standard
 # system locations.
 optdir=/opt/mitmwall
-bindir=$optdir
-mitmproxy_confdir=/home/$user/.mitmproxy
-mitmweb_config_file=$optdir/mitmweb.yaml
+bindir=$optdir/bin
+mitmproxy_confdir=$optdir/mitmweb
+mitmweb_config_file=$mitmproxy_confdir/config.yaml
+legacy_mitmweb_config_file=$optdir/mitmweb.yaml
 servicefile=/etc/systemd/system/mitmwall.service
 ca_cert_dir=/usr/local/share/ca-certificates/extra
 ca_cert_file=$ca_cert_dir/mitmproxy-ca-cert.crt
@@ -69,22 +70,36 @@ system_environment_source=$scriptdir/system_enviroment
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
-# Create the dedicated runtime user if it does not already exist. The home
-# directory is needed because mitmproxy stores its generated CA material under
-# /home/mitmwall/.mitmproxy.
+# Create the dedicated runtime user if it does not already exist. mitmproxy's
+# config and generated CA material are kept under /opt/mitmwall/mitmweb and are
+# referenced explicitly via confdir, so the account's OS home is not used for
+# mitmwall runtime state.
 if ! id "$user" >/dev/null 2>&1; then
     useradd --create-home "$user"
 fi
 
-# Create /opt/mitmwall and the private log directory. The top-level directory is
-# world-readable/executable so systemd can locate scripts, while logs are kept
-# private because they may include requested hosts and proxy details.
-install -d -m 0755 "$optdir"
-install -d -o "$user" -m 0700 "$optdir/logs"
+# Create /opt/mitmwall and the private runtime directories. The top-level and
+# binary directories are world-readable/executable so systemd can locate scripts
+# and mitmproxy binaries, while logs and mitmproxy state are kept private because
+# they may include requested hosts, proxy details, generated CA keys, and the web
+# UI password.
+install -d -m 0755 "$optdir" "$bindir"
+if [ -e "$mitmproxy_confdir" ] && [ ! -d "$mitmproxy_confdir" ]; then
+    rm -f "$mitmproxy_confdir"
+fi
+install -d -o "$user" -m 0700 "$optdir/logs" "$mitmproxy_confdir"
 
 # Ensure the log files exist before service startup. They are owned by the
 # mitmwall user so the unprivileged service can append to them without root.
 touch "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log"
+
+# Move installations that used /opt/mitmwall/mitmweb.yaml to the mitmproxy
+# confdir. mitmproxy automatically loads config.yaml from confdir, and keeping
+# it with the CA material ensures the unprivileged service can read and update
+# all mitmweb runtime state in one owned directory.
+if [ ! -f "$mitmweb_config_file" ] && [ -f "$legacy_mitmweb_config_file" ]; then
+    mv "$legacy_mitmweb_config_file" "$mitmweb_config_file"
+fi
 
 # Generate mitmweb's YAML config once during installation. Keeping the file if
 # it already exists avoids changing the web UI password on every reinstall or
@@ -98,9 +113,10 @@ if [ ! -f "$mitmweb_config_file" ]; then
 fi
 
 # Lock down ownership and permissions for runtime state. Logs and the mitmweb
-# config are readable only by the mitmwall user/root, preventing other local
-# users from reading traffic metadata or the generated admin password.
-chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$mitmweb_config_file"
+# confdir are readable only by the mitmwall user/root, preventing other local
+# users from reading traffic metadata, generated CA keys, or the generated admin
+# password.
+chown "$user" "$optdir/logs" "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$mitmproxy_confdir" "$mitmweb_config_file"
 chmod 0700 "$optdir/logs" "$mitmproxy_confdir"
 chmod 0600 "$optdir/logs/mitmwall.log" "$optdir/logs/mitmweb.log" "$mitmweb_config_file"
 
@@ -163,8 +179,8 @@ fi
 # release archive layouts can vary.
 tar -xzf "$tmpdir/mitmproxy.tar.gz" -C "$tmpdir"
 
-# Copy every executable mitm* binary from the archive into /opt/mitmwall. This
-# includes mitmweb, mitmdump, mitmproxy, and any companion binaries shipped by
+# Copy every executable mitm* binary from the archive into /opt/mitmwall/bin.
+# This includes mitmweb, mitmdump, mitmproxy, and any companion binaries shipped by
 # the release. Track whether anything was installed so archive/layout problems
 # are caught immediately.
 installed=0
