@@ -65,6 +65,13 @@ methods = ["GET"]
 [[allow]]
 domain_regex = '(^|\.)ipinfo\.io$'
 
+## APT repositories
+[[allow]]
+domain = "ports.ubuntu.com"
+
+[[allow]]
+domain = "download.docker.com"
+
 ## Rust
 [[allow]]
 domain = "index.crates.io"
