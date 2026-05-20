@@ -39,6 +39,17 @@ add_redirect_rule() {
     table_cmd=$1
     dport=$2
 
+    # Install the NAT redirect idempotently. `-C` checks whether the exact rule
+    # already exists so restarting the systemd service does not append duplicate
+    # redirects to the OUTPUT chain.
+    #
+    # The owner match excludes the dedicated proxy user. mitmproxy itself runs as
+    # `$user` and must be able to open the real upstream HTTP/HTTPS connection;
+    # redirecting the proxy's own traffic back into the proxy would create a loop.
+    #
+    # All other local users trying to connect directly to TCP port 80 or 443 are
+    # transparently redirected to `$proxy_port`, where mitmproxy can inspect the
+    # HTTP(S) hostname and enforce `/opt/mitmwall/rules.toml`.
     if ! "$table_cmd" -t nat -C OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; then
         "$table_cmd" -t nat -A OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
     fi
@@ -57,16 +68,52 @@ add_output_filter() {
         "$table_cmd" -t filter -N "$chain"
     fi
 
+    # Rebuild the managed chain on every service start. Flushing only this
+    # project-specific chain keeps the rules deterministic without disturbing
+    # unrelated administrator-managed firewall rules in other chains.
     "$table_cmd" -t filter -F "$chain"
+
+    # Always allow packets that belong to connections the kernel already knows
+    # about, plus related helper traffic. This prevents the outbound policy from
+    # breaking replies for existing/inbound sessions such as SSH.
     "$table_cmd" -t filter -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+    # mitmproxy runs as the dedicated mitmwall user. It needs unrestricted
+    # outbound access so, after accepting a client flow, it can create the real
+    # upstream connection to the destination server.
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner "$user" -j ACCEPT
+
+    # systemd-resolved runs as systemd-resolve on Ubuntu. Let only that resolver
+    # process make upstream DNS queries; regular applications are limited below
+    # to talking to local resolver addresses only.
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner systemd-resolve -j ACCEPT
+
+    # Permit local clients to reach the transparent mitmproxy listener. The
+    # destination must be LOCAL so this does not become a general allow rule for
+    # remote hosts that happen to use the same TCP port.
     "$table_cmd" -t filter -A "$chain" -p tcp --dport "$proxy_port" -m addrtype --dst-type LOCAL -j ACCEPT
+
+    # Permit access to the mitmweb UI only on this machine. As above, requiring a
+    # LOCAL destination avoids allowing arbitrary outbound connections to remote
+    # services listening on the web UI port number.
     "$table_cmd" -t filter -A "$chain" -p tcp --dport "$web_port" -m addrtype --dst-type LOCAL -j ACCEPT
+
+    # Allow applications to ask the local resolver for names over UDP, which is
+    # the normal DNS transport. Remote DNS servers remain blocked for ordinary
+    # users so DNS traffic cannot bypass the local resolver policy.
     "$table_cmd" -t filter -A "$chain" -p udp --dport 53 -m addrtype --dst-type LOCAL -j ACCEPT
+
+    # Also allow DNS-over-TCP to the local resolver for large responses, retries,
+    # and standards-compliant fallback. This is still restricted to LOCAL
+    # destinations and therefore does not permit direct remote DNS access.
     "$table_cmd" -t filter -A "$chain" -p tcp --dport 53 -m addrtype --dst-type LOCAL -j ACCEPT
+
+    # Fail closed: anything not explicitly allowed above is a new outbound
+    # connection attempt that would bypass the transparent proxy, so drop it.
     "$table_cmd" -t filter -A "$chain" -j DROP
 
+    # Attach the managed chain to OUTPUT once. `-C` keeps service restarts
+    # idempotent while preserving the rule order after the first installation.
     if ! "$table_cmd" -t filter -C OUTPUT -j "$chain" >/dev/null 2>&1; then
         "$table_cmd" -t filter -A OUTPUT -j "$chain"
     fi
