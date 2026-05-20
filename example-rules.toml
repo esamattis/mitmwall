@@ -17,12 +17,14 @@
 # Hostnames are normalized before matching by trimming whitespace, removing a
 # trailing dot, and lowercasing.
 
-# Exact domain only: allows github.com, but not api.github.com.
+#
 [[allow]]
 domain = "github.com"
-
 [[allow]]
-domain = "raw.githubusercontent.com.com"
+domain = "ghcr.io"
+[[allow]]
+domain = "githubusercontent.com"
+include_subdomains = true
 
 
 # Allow `git fetch` for `esamattis`
@@ -92,6 +94,9 @@ domain = "api.githubcopilot.com"
 methods = "ANY"
 [[allow]]
 domain = "models.dev"
+[[allow]]
+domain = "cdn.agentclientprotocol.com"
+pathname_pattern = "/registry/v1/latest/registry.json"
 
 ## Homebrew / Linuxbrew
 [[allow]]
