@@ -22,8 +22,15 @@ web_port=58081
 # - Allow DNS only to local resolvers so clients can resolve hostnames.
 # - Drop all other new outbound traffic so applications cannot bypass the proxy.
 
+# Enable IPv4 and IPv6 forwarding so the kernel will route packets that are
+# transparently intercepted by mitmproxy back out to their original upstream
+# destinations.
 sysctl -w net.ipv4.ip_forward=1
 sysctl -w net.ipv6.conf.all.forwarding=1
+
+# Disable IPv4 ICMP redirects. This host is intentionally acting as the gateway
+# for intercepted traffic, and redirects could teach clients a bypass path that
+# avoids the transparent proxy/firewall policy.
 sysctl -w net.ipv4.conf.all.send_redirects=0
 
 # Capture direct outbound HTTP/HTTPS attempts from non-proxy users and
