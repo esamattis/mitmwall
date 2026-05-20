@@ -16,8 +16,8 @@ die() {
 # environment changes.
 
 # This installer is safe to run multiple times. Re-running it updates managed
-# files and binaries while preserving local runtime state such as rules.d,
-# mitmweb/config.yaml, and generated mitmproxy CA material.
+# files and binaries while preserving local operator state such as
+# /etc/mitmwall, mitmweb/config.yaml, and generated mitmproxy CA material.
 
 # mitmwall depends on Linux-specific facilities such as systemd, iptables,
 # ip6tables, user management commands, and the Linux mitmproxy binary.
@@ -61,13 +61,14 @@ case "$arch" in
         ;;
 esac
 
-# Centralized installation paths. Everything that belongs to mitmwall itself is
-# kept under /opt/mitmwall, while OS integration points live in their standard
-# system locations.
+# Centralized installation paths. Executables and mitmproxy runtime state live
+# under /opt/mitmwall, while operator-managed configuration lives under
+# /etc/mitmwall.
 optdir=/opt/mitmwall
 bindir=$optdir/bin
-rulesdir=$optdir/rules.d
-addon_config_file=$optdir/addon_config.toml
+etcdir=/etc/mitmwall
+rulesdir=$etcdir/rules.d
+addon_config_file=$etcdir/config.toml
 addon_dir=$optdir/mitmproxy_addon
 mitmproxy_confdir=$optdir/mitmweb
 mitmweb_config_file=$mitmproxy_confdir/config.yaml
@@ -100,15 +101,18 @@ if ! id "$user" >/dev/null 2>&1; then
 else
     info "reusing existing system user $user"
 fi
+user_group=$(id -gn "$user")
 
-# Create /opt/mitmwall and the private runtime directories. The top-level and
-# binary directories are world-readable/executable so systemd can locate scripts
-# and mitmproxy binaries, while mitmproxy state is kept private because it may
-# include generated CA keys and the web UI password. Service logs are handled by
-# systemd journal.
-info "preparing installation directories under $optdir"
+# Create /opt/mitmwall for executables and /etc/mitmwall for operator-managed
+# configuration. The top-level and binary directories are world-readable/
+# executable so systemd can locate scripts and mitmproxy binaries, while
+# mitmproxy state is kept private because it may include generated CA keys and
+# the web UI password. Service logs are handled by systemd journal.
+info "preparing installation directories under $optdir and $etcdir"
 install -d -m 0755 "$optdir" "$bindir"
-install -d -o "$user" -m 0750 "$rulesdir"
+install -d -o root -g "$user_group" -m 0750 "$etcdir" "$rulesdir"
+chown root:"$user_group" "$etcdir" "$rulesdir"
+chmod 0750 "$etcdir" "$rulesdir"
 
 # Create the addon configuration once so local logging preferences are
 # preserved across reinstallation.
@@ -120,8 +124,8 @@ if [ ! -f "$addon_config_file" ]; then
 log_level = "info"
 EOF
 fi
-chown "$user" "$addon_config_file"
-chmod 0600 "$addon_config_file"
+chown root:"$user_group" "$addon_config_file"
+chmod 0640 "$addon_config_file"
 if [ -e "$mitmproxy_confdir" ] && [ ! -d "$mitmproxy_confdir" ]; then
     rm -f "$mitmproxy_confdir"
 fi
@@ -166,7 +170,7 @@ install -m 0644 "$scriptdir"/mitmproxy_addon/*.py "$addon_dir/"
 # Install the repository-provided example rules into the rules directory. The
 # addon loads every *.toml file in this directory, so operators can add their own
 # files alongside this managed example file.
-install -o "$user" -m 0600 "$scriptdir/example-rules.toml" "$rulesdir/examples.toml"
+install -o root -g "$user_group" -m 0640 "$scriptdir/example-rules.toml" "$rulesdir/examples.toml"
 
 # Register the systemd service. The iptables hooks are prefixed with '+' so they
 # run with elevated privileges even though the main service process runs as the

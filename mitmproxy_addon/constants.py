@@ -5,8 +5,8 @@ Shared constants for the mitmwall mitmproxy addon.
 import logging
 from pathlib import Path
 
-RULES_DIR = Path("/opt/mitmwall/rules.d")
-ADDON_CONFIG_FILE = Path("/opt/mitmwall/addon_config.toml")
+RULES_DIR = Path("/etc/mitmwall/rules.d")
+ADDON_CONFIG_FILE = Path("/etc/mitmwall/config.toml")
 DEFAULT_LOG_LEVEL_NAME = "info"
 LOG_LEVELS = {
     "debug": logging.DEBUG,

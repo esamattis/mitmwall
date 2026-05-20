@@ -27,11 +27,11 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
     - only the `systemd-resolve` user can make DNS queries
   - drop other new outbound traffic so applications cannot bypass the proxy
 - The mitmproxy addon in `/opt/mitmwall/mitmproxy_addon/main.py` loads TOML files
-  from `/opt/mitmwall/rules.d` and kills HTTP(S) flows whose host does not
+  from `/etc/mitmwall/rules.d` and kills HTTP(S) flows whose host does not
   match the allowlist.
 - `ExecStopPost` removes the firewall rules when the service stops.
 
-If `/opt/mitmwall/rules.d` is missing or any rule file is invalid, mitmwall
+If `/etc/mitmwall/rules.d` is missing or any rule file is invalid, mitmwall
 fails closed and blocks all proxied HTTP(S) traffic.
 
 ## Install
@@ -49,10 +49,9 @@ sudo ./install.sh
 ```
 
 The installer creates a `mitmwall` system user, installs mitmproxy under
-`/opt/mitmwall`, creates the initial addon configuration at
-`/opt/mitmwall/addon_config.toml`, installs the systemd service, generates the
-mitmproxy CA, and adds the CA to the system trust store with
-`update-ca-certificates`.
+`/opt/mitmwall`, creates `/etc/mitmwall/config.toml` and `/etc/mitmwall/rules.d`,
+installs the systemd service, generates the mitmproxy CA, and adds the CA to
+the system trust store with `update-ca-certificates`.
 
 
 ## Usage
@@ -90,13 +89,13 @@ sudo journalctl -u mitmwall.service -f
 
 ## Allowlist rules
 
-Rules are stored as TOML files in `/opt/mitmwall/rules.d`. Each `*.toml` file
+Rules are stored as TOML files in `/etc/mitmwall/rules.d`. Each `*.toml` file
 can contain zero or more `[[allow]]` tables. Traffic is blocked unless the
 request hostname, HTTP method, and optional pathname filter match at least one
 allow rule.
 
 The [example rules](example-rules.toml) from this repository are installed to
-`/opt/mitmwall/rules.d/examples.toml`.
+`/etc/mitmwall/rules.d/examples.toml`.
 
 ### Syntax
 
@@ -173,7 +172,7 @@ pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
 domain_regex = '(^|\.)ipinfo\.io$'
 ```
 
-After editing files in `/opt/mitmwall/rules.d`, restart the service:
+After editing files in `/etc/mitmwall/rules.d`, restart the service:
 
 ```console
 sudo systemctl restart mitmwall
@@ -191,8 +190,8 @@ to new login sessions after installation.
 
 ## Addon configuration
 
-Addon settings are stored in `/opt/mitmwall/addon_config.toml`. The installer
-creates this file if it does not already exist.
+Addon settings are stored in `/etc/mitmwall/config.toml`. The installer creates
+this file if it does not already exist.
 
 The available setting is:
 

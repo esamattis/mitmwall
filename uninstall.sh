@@ -17,6 +17,7 @@ fi
 
 user=mitmwall
 optdir=/opt/mitmwall
+etcdir=/etc/mitmwall
 servicefile=/etc/systemd/system/mitmwall.service
 ca_cert_dir=/usr/local/share/ca-certificates/extra
 ca_cert_file=$ca_cert_dir/mitmproxy-ca-cert.crt
@@ -91,8 +92,10 @@ remove_managed_block "$environment_file" 0644
 rm -f "$profile_file"
 remove_managed_block "$zshenv_file" 0644
 
-# Remove installed mitmwall files, including local rules, mitmproxy binaries,
-# generated mitmproxy CA material, and mitmweb configuration.
+# Remove installed mitmwall files except operator-managed configuration. Keep
+# /etc/mitmwall so local rules and addon settings survive uninstall/reinstall.
+# Remove the installed binaries, generated mitmproxy CA material, and mitmweb
+# configuration under /opt/mitmwall.
 rm -rf "$optdir"
 
 # Remove the dedicated runtime account that install.sh created. If removal
@@ -116,5 +119,8 @@ Removed:
   - installation directory: $optdir
   - CA certificate source: $ca_cert_file
   - mitmwall-managed environment block: $environment_file
+
+Preserved:
+  - configuration directory: $etcdir
 
 EOF

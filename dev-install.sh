@@ -12,5 +12,6 @@ if systemctl list-unit-files mitmwall.service >/dev/null 2>&1; then
 fi
 
 ./install.sh
-install -o mitmwall -m 0600 ./example-rules.toml /opt/mitmwall/rules.d/examples.toml
+user_group=$(id -gn mitmwall)
+install -o root -g "$user_group" -m 0640 ./example-rules.toml /etc/mitmwall/rules.d/examples.toml
 systemctl restart mitmwall.service

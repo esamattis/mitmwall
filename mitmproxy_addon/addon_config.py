@@ -14,7 +14,7 @@ from .constants import ADDON_CONFIG_FILE, DEFAULT_LOG_LEVEL_NAME, LOG_LEVELS
 @dataclass(frozen=True)
 class AddonConfig:
     """
-    Runtime addon settings loaded from addon_config.toml.
+    Runtime addon settings loaded from config.toml.
     """
 
     log_level_name: str
@@ -58,7 +58,7 @@ def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
 
 def parse_addon_config(config_value: object) -> AddonConfig:
     """
-    Parse and validate addon_config.toml contents.
+    Parse and validate config.toml contents.
     """
 
     if not is_toml_table(config_value):
