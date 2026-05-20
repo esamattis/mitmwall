@@ -9,6 +9,8 @@ TOML files in `/opt/mitmwall/rules.d` to allow or block requests by hostname.
 Non-proxy users can only make DNS queries and proxied web requests; the proxy
 user is allowed to connect upstream.
 
+Ensure all python functions, classes etc. have doc comments.
+
 Never use any pypi packages. Only use stdlib.
 
 After changes install with ./dev-install.sh and test with ./test.sh

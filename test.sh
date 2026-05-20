@@ -2,9 +2,9 @@
 
 set -eu
 
-
-if command -v uvx >/dev/null 2>&1; then
-    uvx ty check
+if command -v basedpyright >/dev/null 2>&1; then
+    basedpyright
+    echo "basedpyright: OK"
 fi
 
 # The test suite exercises Linux-specific firewall and system integration.
@@ -19,6 +19,6 @@ case "$(uname -s)" in
 esac
 
 if ! command -v uvx >/dev/null 2>&1; then
-    echo "test.sh: uvx is required to run type checking" >&2
+    echo "test.sh: basedpyright is required to run type checking" >&2
     exit 1
 fi

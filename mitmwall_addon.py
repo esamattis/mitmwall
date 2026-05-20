@@ -20,9 +20,10 @@ Supported allow rule formats:
 
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, TypeGuard
 from urllib.parse import urlsplit
 
 import tomllib
@@ -45,12 +46,16 @@ def setup_logging() -> None:
 
 @dataclass(frozen=True)
 class MatchResult:
+    """Result of evaluating a request against the allow rules."""
+
     allowed: bool
     rule_name: str | None = None
 
 
 @dataclass(frozen=True)
 class PathnameFilter:
+    """Compiled pathname matcher attached to an allow rule."""
+
     name: str
     pattern: re.Pattern[str]
     uses_search: bool
@@ -58,6 +63,7 @@ class PathnameFilter:
     source: str
 
     def matches(self, pathname: str) -> bool:
+        """Return whether the pathname satisfies this filter."""
         if self.uses_search:
             return self.pattern.search(pathname) is not None
         return self.pattern.fullmatch(pathname) is not None
@@ -65,6 +71,8 @@ class PathnameFilter:
 
 @dataclass(frozen=True)
 class DomainRule:
+    """Allow rule that matches an exact domain and optional subdomains."""
+
     name: str
     domain: str
     include_subdomains: bool
@@ -72,6 +80,7 @@ class DomainRule:
     pathname_filter: PathnameFilter | None = None
 
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
+        """Return whether this rule allows the given host, method, and pathname."""
         if not method_matches(self.methods, method):
             return False
 
@@ -89,12 +98,15 @@ class DomainRule:
 
 @dataclass(frozen=True)
 class RegexRule:
+    """Allow rule that matches hostnames with a regular expression."""
+
     name: str
     pattern: re.Pattern[str]
     methods: tuple[str, ...]
     pathname_filter: PathnameFilter | None = None
 
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
+        """Return whether this regex rule allows the given host, method, and pathname."""
         if not method_matches(self.methods, method):
             return False
 
@@ -105,6 +117,38 @@ class RegexRule:
 
 
 Rule = DomainRule | RegexRule
+
+
+@dataclass(frozen=True)
+class TextToken:
+    """Literal text segment in a pathname pattern."""
+
+    value: str
+
+
+@dataclass(frozen=True)
+class ParamToken:
+    """Named pathname segment parameter token."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class WildcardToken:
+    """Named pathname wildcard token that can span multiple characters."""
+
+    name: str
+
+
+@dataclass(frozen=True)
+class GroupToken:
+    """Optional group of pathname pattern tokens."""
+
+    tokens: list["PathnamePatternToken"]
+
+
+FlatPathnamePatternToken = TextToken | ParamToken | WildcardToken
+PathnamePatternToken = FlatPathnamePatternToken | GroupToken
 DEFAULT_ALLOWED_METHODS = ("GET", "HEAD")
 ANY_METHOD = "ANY"
 ALLOW_RULE_KEYS = {
@@ -118,6 +162,8 @@ ALLOW_RULE_KEYS = {
 
 
 class RequestLike(Protocol):
+    """Subset of mitmproxy request attributes used by the addon."""
+
     pretty_host: str
     host: str
     method: str
@@ -125,9 +171,13 @@ class RequestLike(Protocol):
 
 
 class FlowLike(Protocol):
+    """Subset of mitmproxy flow behavior used by the addon."""
+
     request: RequestLike
 
-    def kill(self) -> None: ...
+    def kill(self) -> None:
+        """Terminate the in-flight request flow immediately."""
+        ...
 
 
 def normalize_host(host: str) -> str:
@@ -141,6 +191,7 @@ def normalize_method(method: str) -> str:
 
 
 def method_matches(allowed_methods: tuple[str, ...], method: str) -> bool:
+    """Return whether a request method is included in an allow rule method set."""
     normalized_method = normalize_method(method)
     return ANY_METHOD in allowed_methods or normalized_method in allowed_methods
 
@@ -151,7 +202,18 @@ def request_pathname(url: str) -> str:
     return pathname or "/"
 
 
-def require_string(rule: dict[str, Any], key: str, index: int) -> str:
+def is_toml_array(value: object) -> TypeGuard[Sequence[object]]:
+    """Return whether a TOML value is an array."""
+    return isinstance(value, list)
+
+
+def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
+    """Return whether a TOML value is a table."""
+    return isinstance(value, dict)
+
+
+def require_string(rule: dict[str, object], key: str, index: int) -> str:
+    """Return a required non-empty string value from an allow rule table."""
     value = rule.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"allow rule #{index}: {key!r} must be a non-empty string")
@@ -159,8 +221,9 @@ def require_string(rule: dict[str, Any], key: str, index: int) -> str:
 
 
 def validate_allowed_keys(
-    rule: dict[str, Any], allowed_keys: set[str], index: int
+    rule: dict[str, object], allowed_keys: set[str], index: int
 ) -> None:
+    """Reject unknown keys in an allow rule table."""
     extra_keys = set(rule) - allowed_keys
     if extra_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_keys))
@@ -168,16 +231,19 @@ def validate_allowed_keys(
 
 
 def rule_name(name: str, pathname_filter: PathnameFilter | None) -> str:
+    """Build the human-readable rule name used in logs."""
     if pathname_filter is None:
         return name
     return f"{name}, {pathname_filter.name}"
 
 
 def is_parameter_name_start(char: str | None) -> bool:
+    """Return whether a character can start a pathname parameter name."""
     return char is not None and (char == "$" or char == "_" or char.isalpha())
 
 
 def is_parameter_name_continue(char: str | None) -> bool:
+    """Return whether a character can continue a pathname parameter name."""
     return char is not None and (
         char == "$"
         or char == "_"
@@ -188,25 +254,29 @@ def is_parameter_name_continue(char: str | None) -> bool:
     )
 
 
-def parse_pathname_pattern_tokens(pattern: str) -> list[tuple[str, Any]]:
+def parse_pathname_pattern_tokens(pattern: str) -> list[PathnamePatternToken]:
+    """Parse a URLPattern-style pathname pattern into structured tokens."""
     chars = list(pattern)
     index = 0
 
     def current_char() -> str | None:
+        """Return the current pattern character without advancing."""
         if index >= len(chars):
             return None
         return chars[index]
 
-    def consume_until(end: str) -> list[tuple[str, Any]]:
+    def consume_until(end: str) -> list[PathnamePatternToken]:
+        """Consume tokens until the requested terminator is reached."""
         nonlocal index
-        output: list[tuple[str, Any]] = []
+        output: list[PathnamePatternToken] = []
         path = ""
 
         def write_path() -> None:
+            """Flush accumulated literal pathname text into the token stream."""
             nonlocal path
             if not path:
                 return
-            output.append(("text", path))
+            output.append(TextToken(path))
             path = ""
 
         while index < len(chars):
@@ -255,12 +325,15 @@ def parse_pathname_pattern_tokens(pattern: str) -> list[tuple[str, Any]]:
                     raise ValueError(f"missing parameter name at index {index}")
 
                 write_path()
-                output.append((token_type, name))
+                if token_type == "param":
+                    output.append(ParamToken(name))
+                else:
+                    output.append(WildcardToken(name))
                 continue
 
             if value == "{":
                 write_path()
-                output.append(("group", consume_until("}")))
+                output.append(GroupToken(consume_until("}")))
                 continue
 
             if value in "}()[]+?!":
@@ -278,17 +351,18 @@ def parse_pathname_pattern_tokens(pattern: str) -> list[tuple[str, Any]]:
 
 
 def flatten_pathname_pattern_tokens(
-    tokens: list[tuple[str, Any]],
-) -> list[list[tuple[str, Any]]]:
-    sequences: list[list[tuple[str, Any]]] = [[]]
+    tokens: list[PathnamePatternToken],
+) -> list[list[FlatPathnamePatternToken]]:
+    """Expand optional groups into all flat pathname token sequences."""
+    sequences: list[list[FlatPathnamePatternToken]] = [[]]
 
-    for token_type, value in tokens:
-        if token_type != "group":
+    for token in tokens:
+        if not isinstance(token, GroupToken):
             for sequence in sequences:
-                sequence.append((token_type, value))
+                sequence.append(token)
             continue
 
-        group_sequences = flatten_pathname_pattern_tokens(value)
+        group_sequences = flatten_pathname_pattern_tokens(token.tokens)
         included = [
             sequence + group_sequence
             for sequence in sequences
@@ -301,17 +375,16 @@ def flatten_pathname_pattern_tokens(
     return sequences
 
 
-def pathname_tokens_to_regex_source(tokens: list[tuple[str, Any]]) -> str:
+def pathname_tokens_to_regex_source(tokens: list[FlatPathnamePatternToken]) -> str:
+    """Convert a flat pathname token sequence into regex source text."""
     source = ""
-    for token_type, value in tokens:
-        if token_type == "text":
-            source += re.escape(value)
-        elif token_type == "param":
+    for token in tokens:
+        if isinstance(token, TextToken):
+            source += re.escape(token.value)
+        elif isinstance(token, ParamToken):
             source += "([^/]+)"
-        elif token_type == "wildcard":
-            source += "(.+)"
         else:
-            raise ValueError(f"unknown token type: {token_type}")
+            source += "(.+)"
     return source
 
 
@@ -319,12 +392,15 @@ def compile_pathname_pattern(pattern: str) -> re.Pattern[str]:
     """Compile a URLPattern-style pathname pattern to a case-sensitive regex."""
     tokens = parse_pathname_pattern_tokens(pattern)
     sequences = flatten_pathname_pattern_tokens(tokens)
-    source = "|".join(pathname_tokens_to_regex_source(sequence) for sequence in sequences)
+    source = "|".join(
+        pathname_tokens_to_regex_source(sequence) for sequence in sequences
+    )
     trailing = "" if pattern.endswith("/") else "/?"
     return re.compile(f"(?:{source}){trailing}")
 
 
-def parse_pathname_filter(rule: dict[str, Any], index: int) -> PathnameFilter | None:
+def parse_pathname_filter(rule: dict[str, object], index: int) -> PathnameFilter | None:
+    """Parse an optional pathname matcher from an allow rule table."""
     has_pathname_regex = "pathname_regex" in rule
     has_pathname_pattern = "pathname_pattern" in rule
 
@@ -368,7 +444,8 @@ def parse_pathname_filter(rule: dict[str, Any], index: int) -> PathnameFilter | 
     return None
 
 
-def parse_methods(rule: dict[str, Any], index: int) -> tuple[str, ...]:
+def parse_methods(rule: dict[str, object], index: int) -> tuple[str, ...]:
+    """Parse and normalize the HTTP methods allowed by a rule."""
     if "methods" not in rule:
         return DEFAULT_ALLOWED_METHODS
 
@@ -377,11 +454,9 @@ def parse_methods(rule: dict[str, Any], index: int) -> tuple[str, ...]:
         method = normalize_method(value)
         if method == ANY_METHOD:
             return (ANY_METHOD,)
-        raise ValueError(
-            f"allow rule #{index}: string 'methods' value must be 'ANY'"
-        )
+        raise ValueError(f"allow rule #{index}: string 'methods' value must be 'ANY'")
 
-    if not isinstance(value, list) or not value:
+    if not is_toml_array(value) or not value:
         raise ValueError(
             f"allow rule #{index}: 'methods' must be 'ANY' or a non-empty list"
         )
@@ -403,28 +478,31 @@ def parse_methods(rule: dict[str, Any], index: int) -> tuple[str, ...]:
 
 
 def parse_rules_file(path: Path) -> list[Rule]:
+    """Load and validate allow rules from a single TOML file."""
     with path.open("rb") as file:
-        config = tomllib.load(file)
+        config_value = tomllib.load(file)
 
-    extra_top_level_keys = set(config) - {"allow"}
+    if not is_toml_table(config_value):
+        raise ValueError("top-level TOML value must be a table")
+
+    extra_top_level_keys = set(config_value) - {"allow"}
     if extra_top_level_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_top_level_keys))
         raise ValueError(f"unsupported top-level key(s): {keys}")
 
-    allow_rules = config.get("allow", [])
-    if not isinstance(allow_rules, list):
+    allow_rules_value = config_value.get("allow", [])
+    if not is_toml_array(allow_rules_value):
         raise ValueError("'allow' must be a list of tables")
 
     parsed_rules: list[Rule] = []
-    for index, rule in enumerate(allow_rules, start=1):
-        if not isinstance(rule, dict):
+    for index, rule in enumerate(allow_rules_value, start=1):
+        if not is_toml_table(rule):
             raise ValueError(f"allow rule #{index}: rule must be a table")
 
-        typed_rule = cast(dict[str, Any], rule)
-        validate_allowed_keys(typed_rule, ALLOW_RULE_KEYS, index)
+        validate_allowed_keys(rule, ALLOW_RULE_KEYS, index)
 
-        has_domain = "domain" in typed_rule
-        has_domain_regex = "domain_regex" in typed_rule
+        has_domain = "domain" in rule
+        has_domain_regex = "domain_regex" in rule
         if has_domain and has_domain_regex:
             raise ValueError(
                 f"allow rule #{index}: cannot set both 'domain' and 'domain_regex'"
@@ -434,12 +512,12 @@ def parse_rules_file(path: Path) -> list[Rule]:
                 f"allow rule #{index}: exactly one of 'domain' or 'domain_regex' is required"
             )
 
-        methods = parse_methods(typed_rule, index)
-        pathname_filter = parse_pathname_filter(typed_rule, index)
+        methods = parse_methods(rule, index)
+        pathname_filter = parse_pathname_filter(rule, index)
 
         if has_domain:
             validate_allowed_keys(
-                typed_rule,
+                rule,
                 {
                     "domain",
                     "include_subdomains",
@@ -449,8 +527,8 @@ def parse_rules_file(path: Path) -> list[Rule]:
                 },
                 index,
             )
-            domain = require_string(typed_rule, "domain", index)
-            include_subdomains = typed_rule.get("include_subdomains", False)
+            domain = require_string(rule, "domain", index)
+            include_subdomains = rule.get("include_subdomains", False)
             if not isinstance(include_subdomains, bool):
                 raise ValueError(
                     f"allow rule #{index}: 'include_subdomains' must be a boolean"
@@ -467,11 +545,11 @@ def parse_rules_file(path: Path) -> list[Rule]:
             )
         else:
             validate_allowed_keys(
-                typed_rule,
+                rule,
                 {"domain_regex", "methods", "pathname_regex", "pathname_pattern"},
                 index,
             )
-            domain_regex = require_string(typed_rule, "domain_regex", index)
+            domain_regex = require_string(rule, "domain_regex", index)
             try:
                 pattern = re.compile(domain_regex, re.IGNORECASE)
             except re.error as exc:
@@ -491,6 +569,7 @@ def parse_rules_file(path: Path) -> list[Rule]:
 
 
 def describe_rule(index: int, rule: Rule) -> str:
+    """Return a log-friendly description of a parsed allow rule."""
     methods = ",".join(rule.methods)
     if isinstance(rule, DomainRule):
         parts = [
@@ -516,6 +595,7 @@ def describe_rule(index: int, rule: Rule) -> str:
 
 
 def load_rules(path: Path = RULES_DIR) -> list[Rule]:
+    """Load all TOML allow rules from a directory."""
     if not path.exists():
         raise FileNotFoundError(f"rules directory does not exist: {path}")
     if not path.is_dir():
@@ -535,24 +615,31 @@ def load_rules(path: Path = RULES_DIR) -> list[Rule]:
 
 
 class Mitmwall:
+    """mitmproxy addon that enforces mitmwall hostname allow rules."""
+
     def __init__(self) -> None:
+        """Initialize addon state and configure logging."""
         self.rules: list[Rule] = []
         self.rule_descriptions: tuple[str, ...] = ()
         setup_logging()
 
-    def load(self, loader) -> None:  # noqa: ANN001 - mitmproxy controls this signature.
+    def load(self, _loader: object) -> None:
+        """Handle mitmproxy addon load events by loading the current rules."""
         LOGGER.info("addon loaded")
         self.reload_rules()
 
     def running(self) -> None:
+        """Reload rules once mitmproxy has finished starting up."""
         self.reload_rules()
 
-    def configure(self, updated) -> None:  # noqa: ANN001 - mitmproxy controls this signature.
+    def configure(self, _updated: set[str]) -> None:
+        """Reload rules after mitmproxy configuration changes."""
         # Reload on mitmproxy config changes. This gives operators a lightweight
         # way to pick up edits with `:set`/reload-like workflows without restart.
         self.reload_rules()
 
     def reload_rules(self) -> None:
+        """Load rules from disk and update logged descriptions when they change."""
         try:
             rules = load_rules()
         except Exception as exc:
@@ -576,11 +663,14 @@ class Mitmwall:
             LOGGER.info(description)
 
     def request(self, flow: FlowLike) -> None:
+        """Allow matching requests and terminate flows that do not match any rule."""
         host = flow.request.pretty_host or flow.request.host
         method = flow.request.method
         url = flow.request.pretty_url
         pathname = request_pathname(url)
-        LOGGER.debug(f"request method={method} host={host} pathname={pathname} url={url}")
+        LOGGER.debug(
+            f"request method={method} host={host} pathname={pathname} url={url}"
+        )
 
         result = self.is_allowed(host, method, pathname)
         if result.allowed:
@@ -595,6 +685,7 @@ class Mitmwall:
     def is_allowed(
         self, host: str, method: str = "GET", pathname: str = "/"
     ) -> MatchResult:
+        """Return whether any loaded rule allows the given request details."""
         normalized_host = normalize_host(host)
         normalized_method = normalize_method(method)
         for rule in self.rules:
