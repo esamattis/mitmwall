@@ -2,8 +2,8 @@
 
 mitmwall is a transparent outbound firewall for Ubuntu. It combines `iptables`
 with [mitmproxy](https://mitmproxy.org/) to ensure that only explicitly allowed
-hostnames can be reached over HTTP and HTTPS. Any request to a hostname not on
-the allowlist is blocked. This prevents:
+HTTP(s) routes can be reached. Any network connection that does not match the
+allowlist is blocked. This prevents:
 
 - **Data exfiltration** — compromised npm packages, rogue AI agents, or other
   untrusted processes stealing credentials, API keys, or source code.
