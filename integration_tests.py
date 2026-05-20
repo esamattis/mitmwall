@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Integration tests for mitmwall network allow/block rules."""
+"""
+Integration tests for mitmwall network allow/block rules.
+"""
 
 import socket
 import ssl
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -16,10 +19,36 @@ REQUEST_TIMEOUT_SECONDS = 20
 SYSTEM_CA_CERTIFICATES = Path("/etc/ssl/certs/ca-certificates.crt")
 PUBLIC_DNS_SERVER = "1.1.1.1"
 DNS_QUERY_TIMEOUT_SECONDS = 5
+PROXY_HOST = "127.0.0.1"
+PROXY_PORT = 58080
+SERVICE_READY_TIMEOUT_SECONDS = 20
+SERVICE_READY_POLL_INTERVAL_SECONDS = 0.1
+
+
+def wait_for_tcp_listener(host: str, port: int, timeout_seconds: float) -> bool:
+    """
+    Return whether a TCP listener accepts connections before the timeout.
+    """
+
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            with socket.create_connection(
+                (host, port), timeout=CONNECT_TIMEOUT_SECONDS
+            ):
+                return True
+        except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(SERVICE_READY_POLL_INTERVAL_SECONDS, remaining))
 
 
 def is_ipv4_socket_address(address: object) -> TypeGuard[tuple[str, int]]:
-    """Return whether a socket address is an IPv4 host/port pair."""
+    """
+    Return whether a socket address is an IPv4 host/port pair.
+    """
+
     match address:
         case (str(), int()):
             return True
@@ -28,10 +57,32 @@ def is_ipv4_socket_address(address: object) -> TypeGuard[tuple[str, int]]:
 
 
 class MitmwallNetworkTests(unittest.TestCase):
-    """Integration tests for mitmwall firewall and allowlist behavior."""
+    """
+    Integration tests for mitmwall firewall and allowlist behavior.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        """
+        Wait for the local mitmwall proxy to accept connections.
+        """
+
+        if not wait_for_tcp_listener(
+            PROXY_HOST,
+            PROXY_PORT,
+            SERVICE_READY_TIMEOUT_SECONDS,
+        ):
+            raise RuntimeError(
+                "mitmwall proxy did not start listening on "
+                f"{PROXY_HOST}:{PROXY_PORT} within "
+                f"{SERVICE_READY_TIMEOUT_SECONDS} seconds"
+            )
 
     def assert_url_allowed(self, name: str, url: str, method: str = "GET") -> None:
-        """Assert that an HTTP request reaches the target URL."""
+        """
+        Assert that an HTTP request reaches the target URL.
+        """
+
         with self.subTest(name=name, url=url, method=method):
             print(f"Testing allowed: {name} ({method} {url})")
             reachable, error = self._url_reachability(url, method=method)
@@ -41,7 +92,10 @@ class MitmwallNetworkTests(unittest.TestCase):
             )
 
     def assert_url_blocked(self, name: str, url: str, method: str = "GET") -> None:
-        """Assert that an HTTP request is blocked before reaching the target URL."""
+        """
+        Assert that an HTTP request is blocked before reaching the target URL.
+        """
+
         with self.subTest(name=name, url=url, method=method):
             print(f"Testing blocked: {name} ({method} {url})")
             reachable, _error = self._url_reachability(url, method=method)
@@ -51,7 +105,10 @@ class MitmwallNetworkTests(unittest.TestCase):
             )
 
     def assert_tcp_allowed(self, name: str, host: str, port: int) -> None:
-        """Assert that a direct TCP connection can be established."""
+        """
+        Assert that a direct TCP connection can be established.
+        """
+
         with self.subTest(name=name, host=host, port=port):
             print(f"Testing TCP allowed: {name} ({host}:{port})")
             self.assertTrue(
@@ -59,7 +116,10 @@ class MitmwallNetworkTests(unittest.TestCase):
             )
 
     def assert_tcp_blocked(self, name: str, host: str, port: int) -> None:
-        """Assert that a direct TCP connection is blocked."""
+        """
+        Assert that a direct TCP connection is blocked.
+        """
+
         with self.subTest(name=name, host=host, port=port):
             print(f"Testing TCP blocked: {name} ({host}:{port})")
             self.assertFalse(
@@ -67,7 +127,10 @@ class MitmwallNetworkTests(unittest.TestCase):
             )
 
     def assert_dns_query_blocked(self, name: str, server: str, hostname: str) -> None:
-        """Assert that a direct UDP DNS query does not receive an answer."""
+        """
+        Assert that a direct UDP DNS query does not receive an answer.
+        """
+
         with self.subTest(name=name, server=server, hostname=hostname):
             print(f"Testing DNS blocked: {name} ({hostname} via {server})")
             self.assertFalse(
@@ -76,45 +139,72 @@ class MitmwallNetworkTests(unittest.TestCase):
             )
 
     def test_exact_domain_rule_is_allowed(self) -> None:
-        """Verify that an exact domain allow rule permits the domain."""
+        """
+        Verify that an exact domain allow rule permits the domain.
+        """
+
         self.assert_url_allowed("exact domain rule", "https://github.com/")
 
     def test_domain_regex_rule_is_allowed(self) -> None:
-        """Verify that a domain_regex allow rule permits a matching domain."""
+        """
+        Verify that a domain_regex allow rule permits a matching domain.
+        """
+
         self.assert_url_allowed("domain_regex rule", "https://ipinfo.io/")
 
     def test_include_subdomains_rule_is_allowed(self) -> None:
-        """Verify that include_subdomains permits matching subdomains."""
+        """
+        Verify that include_subdomains permits matching subdomains.
+        """
+
         self.assert_url_allowed("include_subdomains rule", "https://www.esamatti.fi/")
 
     def test_subdomain_without_include_subdomains_is_blocked(self) -> None:
-        """Verify that subdomains are blocked when not explicitly included."""
+        """
+        Verify that subdomains are blocked when not explicitly included.
+        """
+
         self.assert_url_blocked(
             "subdomain when include_subdomains=false", "https://api.github.com/"
         )
 
     def test_unlisted_domain_is_blocked(self) -> None:
-        """Verify that domains absent from the allowlist are blocked."""
+        """
+        Verify that domains absent from the allowlist are blocked.
+        """
+
         self.assert_url_blocked("unlisted domain", "https://example.com/")
 
     def test_methods_rule_allows_get(self) -> None:
-        """Verify that a methods rule permits an allowed GET request."""
+        """
+        Verify that a methods rule permits an allowed GET request.
+        """
+
         self.assert_url_allowed("methods GET rule", "https://pie.dev/get")
 
     def test_methods_rule_blocks_post(self) -> None:
-        """Verify that a methods rule blocks a disallowed POST request."""
+        """
+        Verify that a methods rule blocks a disallowed POST request.
+        """
+
         self.assert_url_blocked(
             "methods GET rule blocks POST", "https://pie.dev/post", method="POST"
         )
 
     def test_default_methods_rule_allows_head(self) -> None:
-        """Verify that default methods include HEAD requests."""
+        """
+        Verify that default methods include HEAD requests.
+        """
+
         self.assert_url_allowed(
             "default methods rule allows HEAD", "https://github.com/", method="HEAD"
         )
 
     def test_pathname_pattern_rule_allows_matching_post(self) -> None:
-        """Verify that pathname_pattern permits a matching POST request."""
+        """
+        Verify that pathname_pattern permits a matching POST request.
+        """
+
         self.assert_url_allowed(
             "pathname_pattern rule matching POST",
             "https://pie.dev/pathname-pattern/mitmwall/action",
@@ -122,7 +212,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_pathname_pattern_rule_blocks_wrong_static_segment(self) -> None:
-        """Verify that pathname_pattern blocks a wrong static path segment."""
+        """
+        Verify that pathname_pattern blocks a wrong static path segment.
+        """
+
         self.assert_url_blocked(
             "pathname_pattern rule blocks wrong static segment",
             "https://pie.dev/other/mitmwall/action",
@@ -130,7 +223,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_pathname_pattern_rule_blocks_extra_path_segment(self) -> None:
-        """Verify that pathname_pattern blocks an extra path segment."""
+        """
+        Verify that pathname_pattern blocks an extra path segment.
+        """
+
         self.assert_url_blocked(
             "pathname_pattern rule blocks extra path segment",
             "https://pie.dev/pathname-pattern/nested/mitmwall/action",
@@ -138,7 +234,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_pathname_pattern_rule_blocks_nonmatching_pathname(self) -> None:
-        """Verify that pathname_pattern blocks nonmatching paths."""
+        """
+        Verify that pathname_pattern blocks nonmatching paths.
+        """
+
         self.assert_url_blocked(
             "pathname_pattern rule blocks nonmatching pathname",
             "https://pie.dev/pathname-pattern/mitmwall/other",
@@ -146,7 +245,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_pathname_regex_rule_allows_matching_post(self) -> None:
-        """Verify that pathname_regex permits a matching POST request."""
+        """
+        Verify that pathname_regex permits a matching POST request.
+        """
+
         self.assert_url_allowed(
             "pathname_regex rule matching POST",
             "https://pie.dev/pathname-regex/mitmwall/info",
@@ -154,7 +256,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_pathname_regex_rule_blocks_wrong_static_segment(self) -> None:
-        """Verify that pathname_regex blocks a wrong static path segment."""
+        """
+        Verify that pathname_regex blocks a wrong static path segment.
+        """
+
         self.assert_url_blocked(
             "pathname_regex rule blocks wrong static segment",
             "https://pie.dev/other/mitmwall/info",
@@ -162,7 +267,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_pathname_regex_rule_blocks_nonmatching_pathname(self) -> None:
-        """Verify that pathname_regex blocks nonmatching paths."""
+        """
+        Verify that pathname_regex blocks nonmatching paths.
+        """
+
         self.assert_url_blocked(
             "pathname_regex rule blocks nonmatching pathname",
             "https://pie.dev/pathname-regex/mitmwall/info/extra",
@@ -170,11 +278,17 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_direct_ssh_to_github_is_blocked(self) -> None:
-        """Verify that direct SSH connections are blocked."""
+        """
+        Verify that direct SSH connections are blocked.
+        """
+
         self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
 
     def test_direct_dns_queries_to_public_resolver_are_blocked(self) -> None:
-        """Verify that direct DNS queries to public resolvers are blocked."""
+        """
+        Verify that direct DNS queries to public resolvers are blocked.
+        """
+
         self.assert_dns_query_blocked(
             "direct DNS-over-UDP query to public resolver",
             PUBLIC_DNS_SERVER,
@@ -185,7 +299,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         )
 
     def test_tcp_connections_to_localhost_are_allowed(self) -> None:
-        """Verify that loopback TCP connections remain allowed."""
+        """
+        Verify that loopback TCP connections remain allowed.
+        """
+
         host, port, stop_server = self._start_local_tcp_server()
         try:
             self.assert_tcp_allowed("loopback TCP connection", host, port)
@@ -195,7 +312,10 @@ class MitmwallNetworkTests(unittest.TestCase):
     def _url_reachability(
         self, url: str, method: str = "GET"
     ) -> tuple[bool, BaseException | None]:
-        """Return whether an HTTP request can reach a URL and any failure."""
+        """
+        Return whether an HTTP request can reach a URL and any failure.
+        """
+
         request = urllib.request.Request(
             url, headers={"User-Agent": "mitmwall-test/1.0"}, method=method
         )
@@ -219,7 +339,10 @@ class MitmwallNetworkTests(unittest.TestCase):
             return False, exc
 
     def _tcp_is_reachable(self, host: str, port: int) -> bool:
-        """Return whether a TCP connection to a host and port succeeds."""
+        """
+        Return whether a TCP connection to a host and port succeeds.
+        """
+
         try:
             with socket.create_connection(
                 (host, port), timeout=CONNECT_TIMEOUT_SECONDS
@@ -229,7 +352,10 @@ class MitmwallNetworkTests(unittest.TestCase):
             return False
 
     def _start_local_tcp_server(self) -> tuple[str, int, Callable[[], None]]:
-        """Start a one-shot loopback TCP server and return its stop callback."""
+        """
+        Start a one-shot loopback TCP server and return its stop callback.
+        """
+
         ready = threading.Event()
         stopped = threading.Event()
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -244,7 +370,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         host, port = address
 
         def serve_one_connection() -> None:
-            """Accept and close one local TCP connection."""
+            """
+            Accept and close one local TCP connection.
+            """
+
             ready.set()
             try:
                 connection = server.accept()[0]
@@ -260,7 +389,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         _ready = ready.wait(CONNECT_TIMEOUT_SECONDS)
 
         def stop_server() -> None:
-            """Close the local TCP server and wait for its worker to stop."""
+            """
+            Close the local TCP server and wait for its worker to stop.
+            """
+
             try:
                 server.close()
             except OSError:
@@ -270,7 +402,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         return host, port, stop_server
 
     def _dns_udp_query_is_answered(self, server: str, hostname: str) -> bool:
-        """Return whether a UDP DNS query receives a matching response."""
+        """
+        Return whether a UDP DNS query receives a matching response.
+        """
+
         query = self._build_dns_query(hostname)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -283,7 +418,10 @@ class MitmwallNetworkTests(unittest.TestCase):
             return False
 
     def _build_dns_query(self, hostname: str) -> bytes:
-        """Build a minimal DNS A-record query for a hostname."""
+        """
+        Build a minimal DNS A-record query for a hostname.
+        """
+
         labels = hostname.rstrip(".").split(".")
         question = b"".join(
             len(label).to_bytes(1, "big") + label.encode("ascii") for label in labels
