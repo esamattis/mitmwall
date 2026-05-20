@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import tomllib
-from mitmproxy import ctx, http
+from mitmproxy import http
 
 RULES_PATH = Path("/opt/mitmwall/rules.toml")
 LOGGER = logging.getLogger("mitmwall")
@@ -212,28 +212,15 @@ class Mitmwall:
 
     def log_debug(self, message: str) -> None:
         LOGGER.debug(message)
-        self.safe_ctx_log("debug", message)
 
     def log_info(self, message: str) -> None:
         LOGGER.info(message)
-        self.safe_ctx_log("info", message)
 
     def log_warning(self, message: str) -> None:
         LOGGER.warning(message)
-        self.safe_ctx_log("info", f"WARNING {message}")
 
     def log_error(self, message: str) -> None:
         LOGGER.error(message)
-        self.safe_ctx_log("error", message)
-
-    def safe_ctx_log(self, level: str, message: str) -> None:
-        try:
-            log_method = getattr(ctx.log, level)
-            log_method(f"mitmwall: {message}")
-        except Exception:
-            # File logging is authoritative for this addon. Never let mitmproxy's
-            # logging API differences break enforcement.
-            pass
 
 
 addons = [Mitmwall()]
