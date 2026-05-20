@@ -1,21 +1,34 @@
 # mitmwall allow rules
 # Installed to /opt/mitmwall/rules.d/examples.toml.
-# Traffic is blocked unless the destination host and HTTP method match one of these rules.
+# All outbound HTTP/HTTPS traffic is blocked unless it matches an [[allow]] rule.
 #
-# Each [[allow]] table must use exactly one of:
-# - domain: a non-empty hostname string
-# - domain_regex: a non-empty Python regular expression string
+# ─── Syntax ───────────────────────────────────────────────────────────────────
 #
-# include_subdomains is optional, valid only with domain, and defaults to false.
-# methods is optional and defaults to ["GET", "HEAD"]. Set methods = "ANY"
-# to allow all HTTP methods for a matching host.
-# pathname_regex and pathname_pattern are optional pathname filters. Use at most
-# one per rule. pathname_regex is a Python regular expression matched against
-# the URL pathname. pathname_pattern supports URLPattern-style parameters such
-# as "/esamattis/:repo.git/git-upload-pack".
-# Unsupported keys are rejected. A rule cannot contain both domain and domain_regex.
-# Hostnames are normalized before matching by trimming whitespace, removing a
-# trailing dot, and lowercasing.
+# [[allow]]
+# domain = "example.com"            # Exact hostname to allow (required*).
+# include_subdomains = true         # Also match *.example.com (default: false).
+# methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
+#                                   # Use methods = "ANY" to allow all methods.
+# pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
+# pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
+#
+# [[allow]]
+# domain_regex = '(^|\.)example\.(com|org)$'  # Python regex for hostname (required*).
+# methods = "ANY"
+#
+# ─── Key rules ────────────────────────────────────────────────────────────────
+#
+# * Each [[allow]] must have exactly one of `domain` or `domain_regex`.
+# * `include_subdomains` is only valid with `domain`.
+# * At most one of `pathname_pattern` or `pathname_regex` per rule.
+# * `domain_regex` is matched case-insensitively (partial match).
+# * `pathname_regex` need only match part of the pathname (partial match).
+# * `pathname_pattern` must match the entire pathname (full match); supports
+#   :param (one segment), *wildcard (multiple segments), and {optional} groups.
+# * Hostnames are normalized (trimmed, trailing dot removed, lowercased).
+# * Unknown keys are rejected.
+#
+# ──────────────────────────────────────────────────────────────────────────────
 
 #
 [[allow]]

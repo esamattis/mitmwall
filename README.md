@@ -90,32 +90,52 @@ can contain zero or more `[[allow]]` tables. Traffic is blocked unless the
 request hostname, HTTP method, and optional pathname filter match at least one
 allow rule.
 
-The example rules from this repository are installed to
+The [example rules](example-rules.toml) from this repository are installed to
 `/opt/mitmwall/rules.d/examples.toml`.
 
-```toml
-# Each [[allow]] table must use exactly one of:
-# - domain: a non-empty hostname string
-# - domain_regex: a non-empty Python regular expression string
-#
-# include_subdomains is optional, valid only with domain, and defaults to false.
-# methods is optional and defaults to ["GET", "HEAD"]. Set methods = "ANY"
-# to allow all HTTP methods for a matching host.
-# pathname_regex and pathname_pattern are optional pathname filters. Use at most
-# one per rule. pathname_regex is a Python regular expression matched against
-# the URL pathname. pathname_pattern supports URLPattern-style parameters such
-# as "/esamattis/:repo.git/git-upload-pack".
-# Unsupported keys are rejected. A rule cannot contain both domain and domain_regex.
-# Hostnames are normalized before matching by trimming whitespace, removing a
-# trailing dot, and lowercasing. Methods are normalized by trimming whitespace
-# and uppercasing.
+### Syntax
 
+```toml
+[[allow]]
+domain = "example.com"            # Exact hostname to allow (required*).
+include_subdomains = true         # Also match *.example.com (default: false).
+methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
+                                  # Use methods = "ANY" to allow all methods.
+pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
+pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
+
+[[allow]]
+domain_regex = '(^|\.)example\.(com|org)$'  # Python regex for hostname (required*).
+methods = "ANY"
+```
+
+### Rule constraints
+
+- Each `[[allow]]` must have exactly one of `domain` or `domain_regex`.
+- `include_subdomains` is only valid with `domain`.
+- At most one of `pathname_pattern` or `pathname_regex` per rule.
+- Unknown keys are rejected.
+
+### Matching behavior
+
+- `domain_regex` is matched case-insensitively (partial match).
+- `pathname_regex` need only match part of the pathname (partial match).
+- `pathname_pattern` must match the entire pathname (full match) and supports:
+  - `:param` — matches exactly one path segment (no `/`).
+  - `*wildcard` — matches one or more characters (spans `/`).
+  - `{optional}` — optional group of tokens.
+- Hostnames are normalized before matching (trimmed, trailing dot removed,
+  lowercased).
+- Methods are normalized (trimmed, uppercased).
+
+### Examples
+
+```toml
 # Exact domain only: allows GET and HEAD to github.com, but not api.github.com.
 [[allow]]
 domain = "github.com"
-include_subdomains = false
 
-# Domain and all subdomains: allows GET and HEAD to example.com and api.example.com.
+# Domain and all subdomains: allows GET and HEAD to example.com and *.example.com.
 [[allow]]
 domain = "example.com"
 include_subdomains = true
@@ -131,17 +151,11 @@ domain = "webhook.example.com"
 methods = "ANY"
 
 # Allow `git fetch` for repositories owned by `esamattis`.
-# The :repo parameter matches exactly one pathname segment before .git.
+# The :repo parameter matches exactly one pathname segment.
 [[allow]]
 domain = "github.com"
 methods = ["POST"]
 pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
-
-# Allow `git push` for repositories owned by `esamattis`.
-[[allow]]
-domain = "github.com"
-methods = ["POST"]
-pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
 
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
