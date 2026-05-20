@@ -3,14 +3,10 @@
 set -eu
 
 # mitmwall is Linux-specific and installs Linux/systemd/firewall integration.
-case "$(uname -s)" in
-    Linux)
-        ;;
-    *)
-        echo "uninstall.sh: Linux is required" >&2
-        exit 1
-        ;;
-esac
+if [ "$(uname -s)" != "Linux" ]; then
+    echo "uninstall.sh: Linux is required" >&2
+    exit 1
+fi
 
 # Uninstalling modifies systemd units, firewall rules, /opt, trusted CA
 # certificates, environment files, and the dedicated runtime user.
@@ -90,9 +86,7 @@ else
     warn "update-ca-certificates not found; skipping CA bundle refresh"
 fi
 
-# Remove environment variable integration installed by install.sh. The profile.d
-# file is entirely managed by mitmwall, while /etc/environment and zshenv may
-# contain unrelated administrator-managed content.
+# Remove environment variable integration installed by install.sh.
 remove_managed_block "$environment_file" 0644
 rm -f "$profile_file"
 remove_managed_block "$zshenv_file" 0644
@@ -101,12 +95,14 @@ remove_managed_block "$zshenv_file" 0644
 # generated mitmproxy CA material, and mitmweb configuration.
 rm -rf "$optdir"
 
-# Remove the dedicated runtime account that install.sh created. If removal fails
-# because the account still owns running processes, leave it in place and tell
-# the operator rather than failing after the rest of uninstall completed.
+# Remove the dedicated runtime account that install.sh created. If removal
+# fails because the account still owns running processes, leave it in place and
+# tell the operator rather than failing after the rest of uninstall completed.
 if id "$user" >/dev/null 2>&1; then
     if command -v userdel >/dev/null 2>&1; then
-        userdel -r "$user" || warn "failed to remove user '$user'; stop its processes and remove it manually"
+        if ! userdel -r "$user"; then
+            warn "failed to remove user '$user'; stop its processes and remove it manually"
+        fi
     else
         warn "userdel not found; user '$user' was not removed"
     fi
@@ -119,7 +115,6 @@ Removed:
   - systemd unit: $servicefile
   - installation directory: $optdir
   - CA certificate source: $ca_cert_file
-  - shell profile integration: $profile_file
-  - mitmwall-managed environment blocks
+  - mitmwall-managed environment block: $environment_file
 
 EOF

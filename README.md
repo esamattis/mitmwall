@@ -26,7 +26,7 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
   - allow DNS only to the local resolver so clients can resolve hostnames
     - only the `systemd-resolve` user can make DNS queries
   - drop other new outbound traffic so applications cannot bypass the proxy
-- The mitmproxy addon in `/opt/mitmwall/mitmwall_addon.py` loads TOML files
+- The mitmproxy addon in `/opt/mitmwall/mitmproxy_addon/main.py` loads TOML files
   from `/opt/mitmwall/rules.d` and kills HTTP(S) flows whose host does not
   match the allowlist.
 - `ExecStopPost` removes the firewall rules when the service stops.
@@ -49,8 +49,8 @@ sudo ./install.sh
 ```
 
 The installer creates a `mitmwall` system user, installs mitmproxy under
-`/opt/mitmwall`, creates the initial plugin configuration at
-`/opt/mitmwall/plugin_config.toml`, installs the systemd service, generates the
+`/opt/mitmwall`, creates the initial addon configuration at
+`/opt/mitmwall/addon_config.toml`, installs the systemd service, generates the
 mitmproxy CA, and adds the CA to the system trust store with
 `update-ca-certificates`.
 
@@ -183,15 +183,15 @@ sudo systemctl restart mitmwall
 ## System environment variables
 
 The installer reads the plain env file [`system_enviroment`](system_enviroment)
-to build the mitmwall-managed CA environment block written to `/etc/environment`
-and `/etc/profile.d/mitmwall.sh`. These variables point common runtimes and TLS
-libraries, at the mitmproxy CA certificate or the rebuilt system CA bundle so
-HTTPS clients can trust certificates generated while mitmwall is intercepting
-traffic.
+to build the mitmwall-managed CA environment block written to `/etc/environment`.
+These variables point common runtimes and TLS libraries at the mitmproxy CA
+certificate or the rebuilt system CA bundle so HTTPS clients can trust
+certificates generated while mitmwall is intercepting traffic. The values apply
+to new login sessions after installation.
 
-## Plugin configuration
+## Addon configuration
 
-Plugin settings are stored in `/opt/mitmwall/plugin_config.toml`. The installer
+Addon settings are stored in `/opt/mitmwall/addon_config.toml`. The installer
 creates this file if it does not already exist.
 
 The available setting is:
@@ -204,7 +204,7 @@ log_level = "info"
 `info` when the setting or file is missing. Valid values are `debug`, `info`,
 `warning`, `error`, and `critical`.
 
-Restart the service after changing plugin configuration:
+Restart the service after changing addon configuration:
 
 ```console
 sudo systemctl restart mitmwall
