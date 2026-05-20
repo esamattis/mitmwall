@@ -37,6 +37,12 @@ fails closed and blocks all proxied HTTP(S) traffic.
 Run on the Ubuntu server as a sudo-capable user:
 
 ```console
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/mitmwall/main/web-install.sh)"
+```
+
+Or, from a local checkout:
+
+```console
 sudo ./install.sh
 ```
 
