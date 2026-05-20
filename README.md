@@ -13,14 +13,15 @@ untrusted local processes from making unexpected outbound connections. Direct
 outbound HTTP and HTTPS traffic is transparently redirected through mitmproxy and
 blocked unless the destination hostname matches an allow rule.
 
-## How it works
+## How?
 
 - `mitmwall.service` starts `mitmweb` in transparent proxy mode
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
-  - redirect outbound TCP port `80` and `443` traffic to the local proxy;
-  - allow the dedicated `mitmwall` proxy user to make upstream connections;
-  - allow DNS so clients can resolve hostnames;
-  - drop other new outbound traffic so applications cannot bypass the proxy.
+  - redirect outbound TCP port `80` and `443` traffic to the local proxy
+  - only allow the dedicated `mitmwall` user to make upstream connections
+    - the proxy is running as the `mitmwall` user
+  - allow DNS only to the local resolver so clients can resolve hostnames
+  - drop other new outbound traffic so applications cannot bypass the proxy
 - The mitmproxy addon in `/opt/mitmwall/mitmwall_addon.py` loads
   `/opt/mitmwall/rules.toml` and kills HTTP(S) flows whose host does not match
   the allowlist.
@@ -130,3 +131,20 @@ The password can be viewed as an administrator from the generated mitmweb config
 ```console
 sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 ```
+
+## How secure this is?
+
+Well, first of, AI agents helped creating this. The security model relies on
+Linux user permissions: Only the `mitmwall` user can access the network freely.
+So if the attacker can do privilege escalation:
+
+  - to the `mitmwall` user they can access the network
+  - to root they can just stop the service
+
+DNS is restricted to the local system resolver (`systemd-resolved` on
+`127.0.0.53`). Only the `systemd-resolve` user is allowed to make outbound DNS
+queries, so applications cannot send arbitrary data to remote servers on port 53.
+
+But the idea is not to protect from targeted attacks, but from rogue AI agents
+gone mad and from general credentials dumping malware as seen on the npm
+registry lately.
