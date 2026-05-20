@@ -13,6 +13,8 @@ untrusted local processes from making unexpected outbound connections. Direct
 outbound HTTP and HTTPS traffic is transparently redirected through mitmproxy and
 blocked unless the destination hostname matches an allow rule.
 
+"mitmwall" is a word play for mitmproxy + firewall = mitmwall
+
 ## How?
 
 - `mitmwall.service` starts `mitmweb` in transparent proxy mode
