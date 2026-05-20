@@ -16,9 +16,9 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
 
 ## How?
 
-- `mitmwall.service` starts `mitmweb` in transparent proxy mode
+- systemd `mitmwall.service` starts `mitmweb` in transparent proxy mode
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
-  - redirect outbound TCP port `80` and `443` traffic to the local proxy
+  - redirect outbound TCP port `80` and `443` traffic to the proxy
   - only allow root and the dedicated `mitmwall` user to make upstream connections
     - the proxy is running as the `mitmwall` user
     - root is left unrestricted for host administration and troubleshooting
