@@ -196,12 +196,10 @@ this file if it does not already exist.
 The available setting is:
 
 ```toml
+# Available log_level values: "debug", "info", "warning", "error", "critical".
+# The default is "info".
 log_level = "info"
 ```
-
-`log_level` controls the mitmproxy addon logging verbosity. It defaults to
-`info` when the setting or file is missing. Valid values are `debug`, `info`,
-`warning`, `error`, and `critical`.
 
 Restart the service after changing addon configuration:
 
@@ -219,7 +217,7 @@ The password can be viewed as an administrator from the generated mitmweb config
 sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 ```
 
-## How secure this is?
+## How secure is this?
 
 Well, first of, AI agents helped creating this. So there is that 😅
 
