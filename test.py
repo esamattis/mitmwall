@@ -96,6 +96,55 @@ class MitmwallNetworkTests(unittest.TestCase):
             "default methods rule allows HEAD", "https://github.com/", method="HEAD"
         )
 
+    def test_pathname_pattern_rule_allows_matching_post(self):
+        self.assert_url_allowed(
+            "pathname_pattern rule matching POST",
+            "https://pie.dev/pathname-pattern/mitmwall/action",
+            method="POST",
+        )
+
+    def test_pathname_pattern_rule_blocks_wrong_static_segment(self):
+        self.assert_url_blocked(
+            "pathname_pattern rule blocks wrong static segment",
+            "https://pie.dev/other/mitmwall/action",
+            method="POST",
+        )
+
+    def test_pathname_pattern_rule_blocks_extra_path_segment(self):
+        self.assert_url_blocked(
+            "pathname_pattern rule blocks extra path segment",
+            "https://pie.dev/pathname-pattern/nested/mitmwall/action",
+            method="POST",
+        )
+
+    def test_pathname_pattern_rule_blocks_nonmatching_pathname(self):
+        self.assert_url_blocked(
+            "pathname_pattern rule blocks nonmatching pathname",
+            "https://pie.dev/pathname-pattern/mitmwall/other",
+            method="POST",
+        )
+
+    def test_pathname_regex_rule_allows_matching_post(self):
+        self.assert_url_allowed(
+            "pathname_regex rule matching POST",
+            "https://pie.dev/pathname-regex/mitmwall/info",
+            method="POST",
+        )
+
+    def test_pathname_regex_rule_blocks_wrong_static_segment(self):
+        self.assert_url_blocked(
+            "pathname_regex rule blocks wrong static segment",
+            "https://pie.dev/other/mitmwall/info",
+            method="POST",
+        )
+
+    def test_pathname_regex_rule_blocks_nonmatching_pathname(self):
+        self.assert_url_blocked(
+            "pathname_regex rule blocks nonmatching pathname",
+            "https://pie.dev/pathname-regex/mitmwall/info/extra",
+            method="POST",
+        )
+
     def test_direct_ssh_to_github_is_blocked(self):
         self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
 

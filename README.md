@@ -81,7 +81,8 @@ sudo journalctl -u mitmwall.service -f
 
 Rules are stored as TOML files in `/opt/mitmwall/rules.d`. Each `*.toml` file
 can contain zero or more `[[allow]]` tables. Traffic is blocked unless the
-request hostname and HTTP method match at least one allow rule.
+request hostname, HTTP method, and optional pathname filter match at least one
+allow rule.
 
 The example rules from this repository are installed to
 `/opt/mitmwall/rules.d/examples.toml`.
@@ -94,6 +95,10 @@ The example rules from this repository are installed to
 # include_subdomains is optional, valid only with domain, and defaults to false.
 # methods is optional and defaults to ["GET", "HEAD"]. Set methods = "ANY"
 # to allow all HTTP methods for a matching host.
+# pathname_regex and pathname_pattern are optional pathname filters. Use at most
+# one per rule. pathname_regex is a Python regular expression matched against
+# the URL pathname. pathname_pattern supports URLPattern-style parameters such
+# as "/esamattis/:repo.git/git-upload-pack".
 # Unsupported keys are rejected. A rule cannot contain both domain and domain_regex.
 # Hostnames are normalized before matching by trimming whitespace, removing a
 # trailing dot, and lowercasing. Methods are normalized by trimming whitespace
@@ -118,6 +123,13 @@ methods = ["GET"]
 [[allow]]
 domain = "webhook.example.com"
 methods = "ANY"
+
+# Allow POST only to GitHub repository upload-pack pathnames owned by esamattis.
+# The :repo parameter matches exactly one pathname segment before .git.
+[[allow]]
+domain = "github.com"
+pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
+methods = ["POST"]
 
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
@@ -194,7 +206,13 @@ attacker-controlled issue, gist, repository, or workflow log without violating
 the hostname and method allowlist.
 
 The default method policy only allows `GET` and `HEAD`, which blocks many common
-write paths. This reduces accidental exfiltration risk, but it does not make an
+write paths. When a write-capable method is needed, prefer narrowing the rule
+with `pathname_pattern` or `pathname_regex` instead of allowing the whole domain.
+For example, a GitHub rule can allow only the repository path needed for a Git
+operation rather than every issue, gist, repository, or workflow endpoint on the
+host.
+
+Pathname filters reduce accidental exfiltration risk, but they do not make an
 allowed domain safe: secrets may still be leaked through URLs, query strings,
 headers, or any endpoint where an allowed method causes data to leave the host.
 

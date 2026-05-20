@@ -9,6 +9,10 @@
 # include_subdomains is optional, valid only with domain, and defaults to false.
 # methods is optional and defaults to ["GET", "HEAD"]. Set methods = "ANY"
 # to allow all HTTP methods for a matching host.
+# pathname_regex and pathname_pattern are optional pathname filters. Use at most
+# one per rule. pathname_regex is a Python regular expression matched against
+# the URL pathname. pathname_pattern supports URLPattern-style parameters such
+# as "/esamattis/:repo.git/git-upload-pack".
 # Unsupported keys are rejected. A rule cannot contain both domain and domain_regex.
 # Hostnames are normalized before matching by trimming whitespace, removing a
 # trailing dot, and lowercasing.
@@ -17,6 +21,20 @@
 [[allow]]
 domain = "github.com"
 include_subdomains = false
+
+# Pathname pattern-restricted rule: allows POST to a specific pie.dev test
+# pathname shape. The :slug parameter matches exactly one pathname segment.
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = "/pathname-pattern/:slug/action"
+methods = ["POST"]
+
+# Pathname regex-restricted rule: allows POST to a specific pie.dev test
+# pathname shape.
+[[allow]]
+domain = "pie.dev"
+pathname_regex = '^/pathname-regex/[^/]+/info$'
+methods = ["POST"]
 
 [[allow]]
 domain = "esamatti.fi"
