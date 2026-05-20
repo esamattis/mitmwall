@@ -193,7 +193,7 @@ to new login sessions after installation.
 Addon settings are stored in `/etc/mitmwall/config.toml`. The installer creates
 this file if it does not already exist.
 
-The available setting is:
+Available settings:
 
 ```toml
 # Available log_level values: "debug", "info", "warning", "error", "critical".
