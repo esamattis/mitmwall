@@ -20,7 +20,9 @@
 # Exact domain only: allows github.com, but not api.github.com.
 [[allow]]
 domain = "github.com"
-include_subdomains = false
+
+[[allow]]
+domain = "raw.githubusercontent.com.com"
 
 
 # Allow `git fetch` for `esamattis`
@@ -55,7 +57,6 @@ include_subdomains = true
 
 [[allow]]
 domain = "downloads.mitmproxy.org"
-include_subdomains = false
 
 [[allow]]
 domain = "pie.dev"
