@@ -7,9 +7,11 @@ Supported allow rule formats:
     [[allow]]
     domain = "api.github.com"
     include_subdomains = false
+    methods = ["GET"]
 
     [[allow]]
     domain_regex = '(^|\\.)example\\.(com|org)$'
+    methods = "ANY"
 """
 
 import logging
@@ -47,8 +49,12 @@ class DomainRule:
     name: str
     domain: str
     include_subdomains: bool
+    methods: tuple[str, ...]
 
-    def matches(self, host: str) -> bool:
+    def matches(self, host: str, method: str) -> bool:
+        if not method_matches(self.methods, method):
+            return False
+
         host = normalize_host(host)
         domain = normalize_host(self.domain)
 
@@ -62,13 +68,19 @@ class DomainRule:
 class RegexRule:
     name: str
     pattern: re.Pattern[str]
+    methods: tuple[str, ...]
 
-    def matches(self, host: str) -> bool:
+    def matches(self, host: str, method: str) -> bool:
+        if not method_matches(self.methods, method):
+            return False
+
         return self.pattern.search(normalize_host(host)) is not None
 
 
 Rule = DomainRule | RegexRule
-ALLOW_RULE_KEYS = {"domain", "domain_regex", "include_subdomains"}
+DEFAULT_ALLOWED_METHODS = ("GET", "HEAD")
+ANY_METHOD = "ANY"
+ALLOW_RULE_KEYS = {"domain", "domain_regex", "include_subdomains", "methods"}
 
 
 class RequestLike(Protocol):
@@ -89,6 +101,16 @@ def normalize_host(host: str) -> str:
     return host.strip().rstrip(".").lower()
 
 
+def normalize_method(method: str) -> str:
+    """Normalize HTTP methods before rule matching."""
+    return method.strip().upper()
+
+
+def method_matches(allowed_methods: tuple[str, ...], method: str) -> bool:
+    normalized_method = normalize_method(method)
+    return ANY_METHOD in allowed_methods or normalized_method in allowed_methods
+
+
 def require_string(rule: dict[str, Any], key: str, index: int) -> str:
     value = rule.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -103,6 +125,40 @@ def validate_allowed_keys(
     if extra_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_keys))
         raise ValueError(f"allow rule #{index}: unsupported key(s): {keys}")
+
+
+def parse_methods(rule: dict[str, Any], index: int) -> tuple[str, ...]:
+    if "methods" not in rule:
+        return DEFAULT_ALLOWED_METHODS
+
+    value = rule["methods"]
+    if isinstance(value, str):
+        method = normalize_method(value)
+        if method == ANY_METHOD:
+            return (ANY_METHOD,)
+        raise ValueError(
+            f"allow rule #{index}: string 'methods' value must be 'ANY'"
+        )
+
+    if not isinstance(value, list) or not value:
+        raise ValueError(
+            f"allow rule #{index}: 'methods' must be 'ANY' or a non-empty list"
+        )
+
+    methods: list[str] = []
+    for method_index, method in enumerate(value, start=1):
+        if not isinstance(method, str) or not method.strip():
+            raise ValueError(
+                f"allow rule #{index}: methods item #{method_index} must be a non-empty string"
+            )
+        normalized_method = normalize_method(method)
+        if normalized_method == ANY_METHOD:
+            raise ValueError(
+                f"allow rule #{index}: use methods = 'ANY' instead of including 'ANY' in a list"
+            )
+        methods.append(normalized_method)
+
+    return tuple(dict.fromkeys(methods))
 
 
 def load_rules(path: Path = RULES_PATH) -> list[Rule]:
@@ -140,8 +196,12 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
                 f"allow rule #{index}: exactly one of 'domain' or 'domain_regex' is required"
             )
 
+        methods = parse_methods(typed_rule, index)
+
         if has_domain:
-            validate_allowed_keys(typed_rule, {"domain", "include_subdomains"}, index)
+            validate_allowed_keys(
+                typed_rule, {"domain", "include_subdomains", "methods"}, index
+            )
             domain = require_string(typed_rule, "domain", index)
             include_subdomains = typed_rule.get("include_subdomains", False)
             if not isinstance(include_subdomains, bool):
@@ -154,10 +214,11 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
                     name=f"domain {normalized_domain}",
                     domain=normalized_domain,
                     include_subdomains=include_subdomains,
+                    methods=methods,
                 )
             )
         else:
-            validate_allowed_keys(typed_rule, {"domain_regex"}, index)
+            validate_allowed_keys(typed_rule, {"domain_regex", "methods"}, index)
             domain_regex = require_string(typed_rule, "domain_regex", index)
             try:
                 pattern = re.compile(domain_regex, re.IGNORECASE)
@@ -166,7 +227,11 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
                     f"allow rule #{index}: invalid domain_regex {domain_regex!r}: {exc}"
                 ) from exc
             parsed_rules.append(
-                RegexRule(name=f"domain_regex {domain_regex!r}", pattern=pattern)
+                RegexRule(
+                    name=f"domain_regex {domain_regex!r}",
+                    pattern=pattern,
+                    methods=methods,
+                )
             )
 
     return parsed_rules
@@ -206,9 +271,9 @@ class Mitmwall:
         url = flow.request.pretty_url
         LOGGER.debug(f"request method={method} host={host} url={url}")
 
-        result = self.is_allowed(host)
+        result = self.is_allowed(host, method)
         if result.allowed:
-            LOGGER.debug(f"allowed host={host} rule={result.rule_name}")
+            LOGGER.debug(f"allowed host={host} method={method} rule={result.rule_name}")
             return
 
         flow.kill()
@@ -216,10 +281,11 @@ class Mitmwall:
             f"blocked host={host} method={method} url={url}; no allow rule matched"
         )
 
-    def is_allowed(self, host: str) -> MatchResult:
+    def is_allowed(self, host: str, method: str = "GET") -> MatchResult:
         normalized_host = normalize_host(host)
+        normalized_method = normalize_method(method)
         for rule in self.rules:
-            if rule.matches(normalized_host):
+            if rule.matches(normalized_host, normalized_method):
                 return MatchResult(allowed=True, rule_name=rule.name)
         return MatchResult(allowed=False)
 

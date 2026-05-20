@@ -16,27 +16,32 @@ PUBLIC_DNS_SERVER = "1.1.1.1"
 DNS_QUERY_TIMEOUT_SECONDS = 5
 
 
-class HeadRequest(urllib.request.Request):
+class MethodRequest(urllib.request.Request):
+    def __init__(self, *args, method="GET", **kwargs):
+        self._method = method
+        super().__init__(*args, **kwargs)
+
     def get_method(self):
-        return "HEAD"
+        return self._method
 
 
 class MitmwallNetworkTests(unittest.TestCase):
-    def assert_url_allowed(self, name, url):
-        with self.subTest(name=name, url=url):
-            print(f"Testing allowed: {name} ({url})")
-            reachable, error = self._url_reachability(url)
+    def assert_url_allowed(self, name, url, method="GET"):
+        with self.subTest(name=name, url=url, method=method):
+            print(f"Testing allowed: {name} ({method} {url})")
+            reachable, error = self._url_reachability(url, method=method)
             self.assertTrue(
                 reachable,
                 f"{name} should have been allowed; request failed with {error!r}",
             )
 
-    def assert_url_blocked(self, name, url):
-        with self.subTest(name=name, url=url):
-            print(f"Testing blocked: {name} ({url})")
-            reachable, error = self._url_reachability(url)
+    def assert_url_blocked(self, name, url, method="GET"):
+        with self.subTest(name=name, url=url, method=method):
+            print(f"Testing blocked: {name} ({method} {url})")
+            reachable, error = self._url_reachability(url, method=method)
             self.assertFalse(
-                reachable, f"{name} should have been blocked but reached successfully"
+                reachable,
+                f"{name} should have been blocked but reached successfully",
             )
 
     def assert_tcp_allowed(self, name, host, port):
@@ -78,6 +83,19 @@ class MitmwallNetworkTests(unittest.TestCase):
     def test_unlisted_domain_is_blocked(self):
         self.assert_url_blocked("unlisted domain", "https://example.com/")
 
+    def test_methods_rule_allows_get(self):
+        self.assert_url_allowed("methods GET rule", "https://pie.dev/get")
+
+    def test_methods_rule_blocks_post(self):
+        self.assert_url_blocked(
+            "methods GET rule blocks POST", "https://pie.dev/post", method="POST"
+        )
+
+    def test_default_methods_rule_allows_head(self):
+        self.assert_url_allowed(
+            "default methods rule allows HEAD", "https://github.com/", method="HEAD"
+        )
+
     def test_direct_ssh_to_github_is_blocked(self):
         self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
 
@@ -98,8 +116,10 @@ class MitmwallNetworkTests(unittest.TestCase):
         finally:
             stop_server()
 
-    def _url_reachability(self, url):
-        request = HeadRequest(url, headers={"User-Agent": "mitmwall-test/1.0"})
+    def _url_reachability(self, url, method="GET"):
+        request = MethodRequest(
+            url, headers={"User-Agent": "mitmwall-test/1.0"}, method=method
+        )
         # The installer adds mitmproxy's CA to Ubuntu's system trust bundle with
         # update-ca-certificates. Use that same bundle explicitly so the test has
         # the same trust roots as curl even when Python was built with different
