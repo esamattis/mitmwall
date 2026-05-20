@@ -2,9 +2,24 @@
 
 set -eu
 
+# Keep uninstall.sh up to date with every system integration point this installer
+# adds so uninstall removes the same files, services, users, certificates, and
+# environment changes.
+
 # This installer is safe to run multiple times. Re-running it updates managed
 # files and binaries while preserving local runtime state such as rules.toml,
 # mitmweb/config.yaml, and generated mitmproxy CA material.
+
+# mitmwall depends on Linux-specific facilities such as systemd, iptables,
+# ip6tables, user management commands, and the Linux mitmproxy binary.
+case "$(uname -s)" in
+    Linux)
+        ;;
+    *)
+        echo "install.sh: Linux is required" >&2
+        exit 1
+        ;;
+esac
 
 # This installer must run as root because it creates a dedicated system user,
 # writes under /opt, installs a systemd unit, updates trusted CA certificates,
