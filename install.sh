@@ -51,7 +51,6 @@ optdir=/opt/mitmwall
 bindir=$optdir/bin
 mitmproxy_confdir=$optdir/mitmweb
 mitmweb_config_file=$mitmproxy_confdir/config.yaml
-legacy_mitmweb_config_file=$optdir/mitmweb.yaml
 servicefile=/etc/systemd/system/mitmwall.service
 ca_cert_dir=/usr/local/share/ca-certificates/extra
 ca_cert_file=$ca_cert_dir/mitmproxy-ca-cert.crt
@@ -89,14 +88,6 @@ if [ -e "$mitmproxy_confdir" ] && [ ! -d "$mitmproxy_confdir" ]; then
     rm -f "$mitmproxy_confdir"
 fi
 install -d -o "$user" -m 0700 "$mitmproxy_confdir"
-
-# Move installations that used /opt/mitmwall/mitmweb.yaml to the mitmproxy
-# confdir. mitmproxy automatically loads config.yaml from confdir, and keeping
-# it with the CA material ensures the unprivileged service can read and update
-# all mitmweb runtime state in one owned directory.
-if [ ! -f "$mitmweb_config_file" ] && [ -f "$legacy_mitmweb_config_file" ]; then
-    mv "$legacy_mitmweb_config_file" "$mitmweb_config_file"
-fi
 
 # Generate mitmweb's YAML config once during installation. Keeping the file if
 # it already exists avoids changing the web UI password on every reinstall or
