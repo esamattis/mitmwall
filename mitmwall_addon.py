@@ -1,6 +1,6 @@
 """mitmproxy addon for mitmwall allowlist enforcement.
 
-Rules are loaded from /opt/mitmwall/rules.toml.
+Rules are loaded from TOML files in /opt/mitmwall/rules.d.
 
 Supported allow rule formats:
 
@@ -22,7 +22,7 @@ from typing import Any, Protocol, cast
 
 import tomllib
 
-RULES_PATH = Path("/opt/mitmwall/rules.toml")
+RULES_DIR = Path("/opt/mitmwall/rules.d")
 LOGGER = logging.getLogger("mitmwall")
 LOGGER.setLevel(logging.DEBUG)
 LOGGER.propagate = False
@@ -161,21 +161,18 @@ def parse_methods(rule: dict[str, Any], index: int) -> tuple[str, ...]:
     return tuple(dict.fromkeys(methods))
 
 
-def load_rules(path: Path = RULES_PATH) -> list[Rule]:
-    if not path.exists():
-        raise FileNotFoundError(f"rules file does not exist: {path}")
-
+def parse_rules_file(path: Path) -> list[Rule]:
     with path.open("rb") as file:
         config = tomllib.load(file)
 
     extra_top_level_keys = set(config) - {"allow"}
     if extra_top_level_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_top_level_keys))
-        raise ValueError(f"rules.toml: unsupported top-level key(s): {keys}")
+        raise ValueError(f"unsupported top-level key(s): {keys}")
 
     allow_rules = config.get("allow", [])
     if not isinstance(allow_rules, list):
-        raise ValueError("rules.toml: 'allow' must be a list of tables")
+        raise ValueError("'allow' must be a list of tables")
 
     parsed_rules: list[Rule] = []
     for index, rule in enumerate(allow_rules, start=1):
@@ -237,6 +234,25 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
     return parsed_rules
 
 
+def load_rules(path: Path = RULES_DIR) -> list[Rule]:
+    if not path.exists():
+        raise FileNotFoundError(f"rules directory does not exist: {path}")
+    if not path.is_dir():
+        raise NotADirectoryError(f"rules path is not a directory: {path}")
+
+    parsed_rules: list[Rule] = []
+    rule_files = sorted(
+        child for child in path.iterdir() if child.is_file() and child.suffix == ".toml"
+    )
+    for rule_file in rule_files:
+        try:
+            parsed_rules.extend(parse_rules_file(rule_file))
+        except Exception as exc:
+            raise ValueError(f"failed to load {rule_file}: {exc}") from exc
+
+    return parsed_rules
+
+
 class Mitmwall:
     def __init__(self) -> None:
         self.rules: list[Rule] = []
@@ -260,10 +276,10 @@ class Mitmwall:
         except Exception as exc:
             # Fail closed: if the allowlist is missing or invalid, block all traffic.
             self.rules = []
-            LOGGER.error(f"failed to load {RULES_PATH}: {exc}")
+            LOGGER.error(f"failed to load {RULES_DIR}: {exc}")
             return
 
-        LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_PATH}")
+        LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_DIR}")
 
     def request(self, flow: FlowLike) -> None:
         host = flow.request.pretty_host or flow.request.host

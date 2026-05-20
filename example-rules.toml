@@ -1,5 +1,5 @@
 # mitmwall allow rules
-# Installed to /opt/mitmwall/rules.toml.
+# Installed to /opt/mitmwall/rules.d/examples.toml.
 # Traffic is blocked unless the destination host and HTTP method match one of these rules.
 #
 # Each [[allow]] table must use exactly one of:

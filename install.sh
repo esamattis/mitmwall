@@ -7,7 +7,7 @@ set -eu
 # environment changes.
 
 # This installer is safe to run multiple times. Re-running it updates managed
-# files and binaries while preserving local runtime state such as rules.toml,
+# files and binaries while preserving local runtime state such as rules.d,
 # mitmweb/config.yaml, and generated mitmproxy CA material.
 
 # mitmwall depends on Linux-specific facilities such as systemd, iptables,
@@ -64,6 +64,7 @@ esac
 # system locations.
 optdir=/opt/mitmwall
 bindir=$optdir/bin
+rulesdir=$optdir/rules.d
 mitmproxy_confdir=$optdir/mitmweb
 mitmweb_config_file=$mitmproxy_confdir/config.yaml
 servicefile=/etc/systemd/system/mitmwall.service
@@ -99,6 +100,7 @@ fi
 # include generated CA keys and the web UI password. Service logs are handled by
 # systemd journal.
 install -d -m 0755 "$optdir" "$bindir"
+install -d -o "$user" -m 0750 "$rulesdir"
 if [ -e "$mitmproxy_confdir" ] && [ ! -d "$mitmproxy_confdir" ]; then
     rm -f "$mitmproxy_confdir"
 fi
@@ -132,14 +134,10 @@ install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$optdir/"
 # Install the mitmproxy addon that enforces the allow/block rules.
 install -m 0644 "$scriptdir/mitmwall_addon.py" "$optdir/"
 
-# Install the default rules file only on first install. Existing rules are
-# preserved so local policy changes are not overwritten by upgrades or reruns of
-# this installer.
-if [ ! -f "$optdir/rules.toml" ]; then
-    install -o "$user" -m 0600 "$scriptdir/rules.toml" "$optdir/rules.toml"
-fi
-chown "$user" "$optdir/rules.toml"
-chmod 0600 "$optdir/rules.toml"
+# Install the repository-provided example rules into the rules directory. The
+# addon loads every *.toml file in this directory, so operators can add their own
+# files alongside this managed example file.
+install -o "$user" -m 0600 "$scriptdir/example-rules.toml" "$rulesdir/examples.toml"
 
 # Register the systemd service. The iptables hooks are prefixed with '+' so they
 # run with elevated privileges even though the main service process runs as the

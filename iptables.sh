@@ -76,7 +76,7 @@ add_redirect_rule() {
     #
     # All other local users trying to connect directly to TCP port 80 or 443 are
     # transparently redirected to `$proxy_port`, where mitmproxy can inspect the
-    # HTTP(S) hostname and enforce `/opt/mitmwall/rules.toml`.
+    # HTTP(S) hostname and enforce TOML rules from `/opt/mitmwall/rules.d`.
     #
     # Exclude loopback traffic from the redirect so localhost services remain
     # reachable on their real ports instead of being captured by mitmproxy.

@@ -24,13 +24,13 @@ blocked unless the destination hostname matches an allow rule.
   - allow DNS only to the local resolver so clients can resolve hostnames
     - only the `systemd-resolve` user can make DNS queries
   - drop other new outbound traffic so applications cannot bypass the proxy
-- The mitmproxy addon in `/opt/mitmwall/mitmwall_addon.py` loads
-  `/opt/mitmwall/rules.toml` and kills HTTP(S) flows whose host does not match
-  the allowlist.
+- The mitmproxy addon in `/opt/mitmwall/mitmwall_addon.py` loads TOML files
+  from `/opt/mitmwall/rules.d` and kills HTTP(S) flows whose host does not
+  match the allowlist.
 - `ExecStopPost` removes the firewall rules when the service stops.
 
-If `/opt/mitmwall/rules.toml` is missing or invalid, mitmwall fails closed and
-blocks all proxied HTTP(S) traffic.
+If `/opt/mitmwall/rules.d` is missing or any rule file is invalid, mitmwall
+fails closed and blocks all proxied HTTP(S) traffic.
 
 ## Install
 
@@ -79,9 +79,12 @@ sudo journalctl -u mitmwall.service -f
 
 ## Allowlist rules
 
-Rules are stored in `/opt/mitmwall/rules.toml`. The file is TOML and contains
-zero or more `[[allow]]` tables. Traffic is blocked unless the request hostname
-and HTTP method match at least one allow rule.
+Rules are stored as TOML files in `/opt/mitmwall/rules.d`. Each `*.toml` file
+can contain zero or more `[[allow]]` tables. Traffic is blocked unless the
+request hostname and HTTP method match at least one allow rule.
+
+The example rules from this repository are installed to
+`/opt/mitmwall/rules.d/examples.toml`.
 
 ```toml
 # Each [[allow]] table must use exactly one of:
@@ -121,7 +124,7 @@ methods = "ANY"
 domain_regex = '(^|\.)ipinfo\.io$'
 ```
 
-After editing `/opt/mitmwall/rules.toml`, restart the service:
+After editing files in `/opt/mitmwall/rules.d`, restart the service:
 
 ```console
 sudo systemctl restart mitmwall
