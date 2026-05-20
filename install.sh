@@ -288,6 +288,9 @@ To stop mitmwall:
 To check mitmwall status:
   sudo systemctl status mitmwall
 
+To view logs:
+  sudo journalctl -u mitmwall --no-pager
+
 To load mitmwall CA environment variables in your current shell:
   . /etc/profile.d/mitmwall.sh
 
