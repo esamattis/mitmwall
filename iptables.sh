@@ -38,7 +38,7 @@ chain=MITMWALL_OUTPUT
 # Policy installed by the "add" action:
 # - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
-# - Allow the proxy user to make outbound upstream connections.
+# - Allow root and the proxy user to make outbound upstream connections.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
 # - Allow all loopback traffic so localhost services remain reachable.
 # - Allow other users to connect only to the local proxy and web UI ports on this host.
@@ -58,8 +58,8 @@ enable_forwarding() {
     sysctl -w net.ipv4.conf.all.send_redirects=0
 }
 
-# Capture direct outbound HTTP/HTTPS attempts from non-proxy users and
-# transparently redirect them to the local proxy.
+# Capture direct outbound HTTP/HTTPS attempts from users other than root and
+# the proxy user, then transparently redirect them to the local proxy.
 add_redirect_rule() {
     table_cmd=$1
     dport=$2
@@ -68,9 +68,11 @@ add_redirect_rule() {
     # already exists so restarting the systemd service does not append duplicate
     # redirects to the OUTPUT chain.
     #
-    # The owner match excludes the dedicated proxy user. mitmproxy itself runs as
-    # `$user` and must be able to open the real upstream HTTP/HTTPS connection;
-    # redirecting the proxy's own traffic back into the proxy would create a loop.
+    # The owner matches exclude root and the dedicated proxy user. mitmproxy
+    # itself runs as `$user` and must be able to open the real upstream HTTP/HTTPS
+    # connection; redirecting the proxy's own traffic back into the proxy would
+    # create a loop. Root is also allowed to administer the host and troubleshoot
+    # networking without being captured by the transparent proxy.
     #
     # All other local users trying to connect directly to TCP port 80 or 443 are
     # transparently redirected to `$proxy_port`, where mitmproxy can inspect the
@@ -78,8 +80,8 @@ add_redirect_rule() {
     #
     # Exclude loopback traffic from the redirect so localhost services remain
     # reachable on their real ports instead of being captured by mitmproxy.
-    if ! "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; then
-        "$table_cmd" -t nat -A OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
+    if ! "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; then
+        "$table_cmd" -t nat -A OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
     fi
 }
 
@@ -90,15 +92,16 @@ remove_redirect_rule() {
     table_cmd=$1
     dport=$2
 
-    while "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; do
-        "$table_cmd" -t nat -D OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
+    while "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; do
+        "$table_cmd" -t nat -D OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
     done
+
 }
 
 # Enforce the outbound allowlist. Established/related packets are allowed so
 # replies from inbound connections (for example SSH) are not broken. The proxy
-# user is allowed to reach the network, loopback traffic is allowed so localhost
-# services remain reachable, clients are allowed to reach the local proxy and web
+# user and root are allowed to reach the network, loopback traffic is allowed so
+# localhost services remain reachable, clients are allowed to reach the local proxy and web
 # UI on this host and DNS, and every other new outbound connection is blocked.
 add_output_filter() {
     table_cmd=$1
@@ -116,6 +119,10 @@ add_output_filter() {
     # about, plus related helper traffic. This prevents the outbound policy from
     # breaking replies for existing/inbound sessions such as SSH.
     "$table_cmd" -t filter -A "$chain" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+    # Root needs unrestricted outbound access for host administration and
+    # troubleshooting, matching the bypass behavior of the proxy user.
+    "$table_cmd" -t filter -A "$chain" -m owner --uid-owner 0 -j ACCEPT
 
     # mitmproxy runs as the dedicated mitmwall user. It needs unrestricted
     # outbound access so, after accepting a client flow, it can create the real
@@ -165,8 +172,8 @@ add_output_filter() {
 
 # Remove the outbound allowlist/blocklist chain installed by the "add" action.
 # That chain allows established/related packets so inbound services such as SSH
-# keep working, allows the proxy user to reach upstream hosts, allows loopback
-# traffic, allows other users to connect to the local proxy and web UI ports on
+# keep working, allows root and the proxy user to reach upstream hosts, allows
+# loopback traffic, allows other users to connect to the local proxy and web UI ports on
 # this host and DNS, and blocks all other new outbound traffic.
 remove_output_filter() {
     table_cmd=$1

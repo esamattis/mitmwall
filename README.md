@@ -18,8 +18,9 @@ blocked unless the destination hostname matches an allow rule.
 - `mitmwall.service` starts `mitmweb` in transparent proxy mode
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
   - redirect outbound TCP port `80` and `443` traffic to the local proxy
-  - only allow the dedicated `mitmwall` user to make upstream connections
+  - only allow root and the dedicated `mitmwall` user to make upstream connections
     - the proxy is running as the `mitmwall` user
+    - root is left unrestricted for host administration and troubleshooting
   - allow DNS only to the local resolver so clients can resolve hostnames
     - only the `systemd-resolve` user can make DNS queries
   - drop other new outbound traffic so applications cannot bypass the proxy
@@ -136,11 +137,13 @@ sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 ## How secure this is?
 
 Well, first of, AI agents helped creating this. The security model relies on
-Linux user permissions: Only the `mitmwall` user can access the network freely.
-So if the attacker can do privilege escalation:
+Linux user permissions: Only root and the `mitmwall` user can access the network
+freely. Root is intentionally exempt so administrators can manage and troubleshoot
+the host without going through the proxy. So if the attacker can do privilege
+escalation:
 
   - to the `mitmwall` user they can access the network
-  - to root they can just stop the service
+  - to root they can access the network and can just stop the service
 
 ### DNS leaks
 
