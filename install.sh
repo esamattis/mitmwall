@@ -65,6 +65,7 @@ esac
 optdir=/opt/mitmwall
 bindir=$optdir/bin
 rulesdir=$optdir/rules.d
+plugin_config_file=$optdir/plugin_config.toml
 mitmproxy_confdir=$optdir/mitmweb
 mitmweb_config_file=$mitmproxy_confdir/config.yaml
 servicefile=/etc/systemd/system/mitmwall.service
@@ -101,6 +102,18 @@ fi
 # systemd journal.
 install -d -m 0755 "$optdir" "$bindir"
 install -d -o "$user" -m 0750 "$rulesdir"
+
+# Create the plugin configuration once so local logging preferences are
+# preserved across reinstallation.
+if [ ! -f "$plugin_config_file" ]; then
+    cat >"$plugin_config_file" <<'EOF'
+# Available log_level values: "debug", "info", "warning", "error", "critical".
+# The default is "info".
+log_level = "info"
+EOF
+fi
+chown "$user" "$plugin_config_file"
+chmod 0600 "$plugin_config_file"
 if [ -e "$mitmproxy_confdir" ] && [ ! -d "$mitmproxy_confdir" ]; then
     rm -f "$mitmproxy_confdir"
 fi

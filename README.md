@@ -47,8 +47,10 @@ sudo ./install.sh
 ```
 
 The installer creates a `mitmwall` system user, installs mitmproxy under
-`/opt/mitmwall`, installs the systemd service, generates the mitmproxy CA, and
-adds the CA to the system trust store with `update-ca-certificates`.
+`/opt/mitmwall`, creates the initial plugin configuration at
+`/opt/mitmwall/plugin_config.toml`, installs the systemd service, generates the
+mitmproxy CA, and adds the CA to the system trust store with
+`update-ca-certificates`.
 
 
 ## Usage
@@ -82,6 +84,7 @@ View logs:
 ```console
 sudo journalctl -u mitmwall.service -f
 ```
+
 
 ## Allowlist rules
 
@@ -177,6 +180,27 @@ and `/etc/profile.d/mitmwall.sh`. These variables point common runtimes and TLS
 libraries, at the mitmproxy CA certificate or the rebuilt system CA bundle so
 HTTPS clients can trust certificates generated while mitmwall is intercepting
 traffic.
+
+## Plugin configuration
+
+Plugin settings are stored in `/opt/mitmwall/plugin_config.toml`. The installer
+creates this file if it does not already exist.
+
+The available setting is:
+
+```toml
+log_level = "info"
+```
+
+`log_level` controls the mitmproxy addon logging verbosity. It defaults to
+`info` when the setting or file is missing. Valid values are `debug`, `info`,
+`warning`, `error`, and `critical`.
+
+Restart the service after changing plugin configuration:
+
+```console
+sudo systemctl restart mitmwall
+```
 
 ## Web interface
 

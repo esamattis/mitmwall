@@ -29,19 +29,104 @@ from urllib.parse import urlsplit
 import tomllib
 
 RULES_DIR = Path("/opt/mitmwall/rules.d")
+PLUGIN_CONFIG_FILE = Path("/opt/mitmwall/plugin_config.toml")
+DEFAULT_LOG_LEVEL_NAME = "info"
+LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+}
 LOGGER = logging.getLogger("mitmwall")
-LOGGER.setLevel(logging.DEBUG)
+LOGGER.setLevel(logging.INFO)
 LOGGER.propagate = False
+
+
+@dataclass(frozen=True)
+class PluginConfig:
+    """Runtime plugin settings loaded from plugin_config.toml."""
+
+    log_level_name: str
+    log_level: int
+
+
+def default_plugin_config() -> PluginConfig:
+    """Return the built-in plugin configuration defaults."""
+    return PluginConfig(
+        log_level_name=DEFAULT_LOG_LEVEL_NAME,
+        log_level=LOG_LEVELS[DEFAULT_LOG_LEVEL_NAME],
+    )
+
+
+def parse_log_level(value: object) -> tuple[str, int]:
+    """Parse and validate a plugin log level value."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("'log_level' must be a non-empty string")
+
+    normalized = value.strip().lower()
+    if normalized not in LOG_LEVELS:
+        allowed = ", ".join(sorted(LOG_LEVELS))
+        raise ValueError(f"'log_level' must be one of: {allowed}")
+
+    return normalized, LOG_LEVELS[normalized]
+
+
+def parse_plugin_config(config_value: object) -> PluginConfig:
+    """Parse and validate plugin_config.toml contents."""
+    if not is_toml_table(config_value):
+        raise ValueError("top-level TOML value must be a table")
+
+    extra_top_level_keys = set(config_value) - {"log_level"}
+    if extra_top_level_keys:
+        keys = ", ".join(sorted(repr(key) for key in extra_top_level_keys))
+        raise ValueError(f"unsupported top-level key(s): {keys}")
+
+    log_level_name, log_level = parse_log_level(
+        config_value.get("log_level", DEFAULT_LOG_LEVEL_NAME)
+    )
+    return PluginConfig(log_level_name=log_level_name, log_level=log_level)
+
+
+def load_plugin_config(path: Path = PLUGIN_CONFIG_FILE) -> PluginConfig:
+    """Load plugin runtime configuration from a TOML file."""
+    if not path.exists():
+        return default_plugin_config()
+
+    with path.open("rb") as file:
+        config_value = tomllib.load(file)
+
+    return parse_plugin_config(config_value)
+
+
+def apply_log_level(log_level: int) -> None:
+    """Apply the selected log level to the addon logger and its handlers."""
+    LOGGER.setLevel(log_level)
+    for handler in LOGGER.handlers:
+        handler.setLevel(log_level)
 
 
 def setup_logging() -> None:
     """Send addon logs to stderr so systemd journal captures them."""
-    if LOGGER.handlers:
+    if not LOGGER.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+        LOGGER.addHandler(handler)
+
+    try:
+        plugin_config = load_plugin_config()
+    except Exception as exc:
+        default_config = default_plugin_config()
+        apply_log_level(default_config.log_level)
+        message = (
+            f"failed to load {PLUGIN_CONFIG_FILE}: {exc}; "
+            + f"using log_level={default_config.log_level_name}"
+        )
+        LOGGER.error(message)
         return
-    handler = logging.StreamHandler()
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
-    LOGGER.addHandler(handler)
+
+    apply_log_level(plugin_config.log_level)
 
 
 @dataclass(frozen=True)
