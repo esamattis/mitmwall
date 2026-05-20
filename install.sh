@@ -92,11 +92,13 @@ install -d -o "$user" -m 0700 "$mitmproxy_confdir"
 # Generate mitmweb's YAML config once during installation. Keeping the file if
 # it already exists avoids changing the web UI password on every reinstall or
 # service restart.
+generated_web_password=
 if [ ! -f "$mitmweb_config_file" ]; then
     # Keep the generated password private from the moment the file is created.
     # Without this, the file could briefly be world-readable before chmod below.
     umask 077
-    password=$(openssl rand -base64 32)
+    password=$(openssl rand -base64 20 | tr '+/' '-_' | tr -d '=')
+    generated_web_password=$password
     printf 'web_password: "%s"\n' "$password" >"$mitmweb_config_file"
 fi
 
@@ -277,3 +279,8 @@ To load mitmwall CA environment variables in your current shell:
   . /etc/profile.d/mitmwall.sh
 
 EOF
+
+if [ -n "$generated_web_password" ]; then
+    printf 'Generated mitmweb password: %s\n' "$generated_web_password"
+    printf 'Visit http://127.0.0.1:58081/?token=%s\n' "$generated_web_password"
+fi
