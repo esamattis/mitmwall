@@ -21,6 +21,7 @@ blocked unless the destination hostname matches an allow rule.
   - only allow the dedicated `mitmwall` user to make upstream connections
     - the proxy is running as the `mitmwall` user
   - allow DNS only to the local resolver so clients can resolve hostnames
+    - only the `systemd-resolve` user can make DNS queries
   - drop other new outbound traffic so applications cannot bypass the proxy
 - The mitmproxy addon in `/opt/mitmwall/mitmwall_addon.py` loads
   `/opt/mitmwall/rules.toml` and kills HTTP(S) flows whose host does not match
@@ -141,9 +142,28 @@ So if the attacker can do privilege escalation:
   - to the `mitmwall` user they can access the network
   - to root they can just stop the service
 
-DNS is restricted to the local system resolver (`systemd-resolved` on
-`127.0.0.53`). Only the `systemd-resolve` user is allowed to make outbound DNS
-queries, so applications cannot send arbitrary data to remote servers on port 53.
+### DNS leaks
+
+DNS from applications is restricted to local resolvers. The firewall permits
+TCP/UDP port 53 only when the destination is local, such as the system resolver
+(`systemd-resolved` on `127.0.0.53`). The `systemd-resolve` user is allowed to
+make upstream connections so `systemd-resolved` can resolve names; other users
+cannot send traffic directly to remote DNS servers on port 53.
+
+This does not prevent DNS-name-based exfiltration. A malicious process can still
+ask the local resolver to look up names that contain encoded data, such as
+`secret-token.attacker-controlled-domain.example`. If the attacker controls that
+domain's authoritative DNS server, the normal DNS resolution path can reveal the
+queried name to them. This channel is limited and noisy, but it can still be
+enough to leak small secrets such as API keys or tokens.
+
+Closing this channel would require a DNS proxy/filter similar in spirit to the
+HTTP/HTTPS proxy. Applications would only be allowed to query the local DNS
+proxy, and only that proxy user would be allowed to make upstream DNS queries.
+The proxy would need to apply policy before forwarding a name upstream, for
+example by allowing only domains that match the same allowlist used for web
+traffic and rejecting suspicious names such as long, high-entropy, or constantly
+changing subdomains.
 
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm
