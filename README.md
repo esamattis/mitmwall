@@ -168,6 +168,18 @@ example by allowing only domains that match the same allowlist used for web
 traffic and rejecting suspicious names such as long, high-entropy, or constantly
 changing subdomains.
 
+### Allowlisted-domain exfiltration
+
+Allowed domains can still be used for credentials dumping. For example, if
+`github.com` is allowed, malware could post secrets to an attacker-controlled
+issue, gist, repository, or workflow log without violating the hostname
+allowlist.
+
+mitmwall currently allows or blocks by hostname. It does not prove that the
+account, repository, bucket, endpoint, or request body is safe. Treat every
+allowed domain as a possible exfiltration channel unless that service also
+enforces where data may be written.
+
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm
 registry lately.
