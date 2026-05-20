@@ -39,7 +39,7 @@ def setup_logging() -> None:
         return
     handler = logging.StreamHandler()
     handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
     LOGGER.addHandler(handler)
 
 
@@ -54,6 +54,8 @@ class PathnameFilter:
     name: str
     pattern: re.Pattern[str]
     uses_search: bool
+    kind: str
+    source: str
 
     def matches(self, pathname: str) -> bool:
         if self.uses_search:
@@ -343,6 +345,8 @@ def parse_pathname_filter(rule: dict[str, Any], index: int) -> PathnameFilter | 
             name=f"pathname_regex {pathname_regex!r}",
             pattern=pattern,
             uses_search=True,
+            kind="pathname_regex",
+            source=pathname_regex,
         )
 
     if has_pathname_pattern:
@@ -357,6 +361,8 @@ def parse_pathname_filter(rule: dict[str, Any], index: int) -> PathnameFilter | 
             name=f"pathname_pattern {pathname_pattern!r}",
             pattern=pattern,
             uses_search=False,
+            kind="pathname_pattern",
+            source=pathname_pattern,
         )
 
     return None
@@ -484,6 +490,31 @@ def parse_rules_file(path: Path) -> list[Rule]:
     return parsed_rules
 
 
+def describe_rule(index: int, rule: Rule) -> str:
+    methods = ",".join(rule.methods)
+    if isinstance(rule, DomainRule):
+        parts = [
+            f"allow rule #{index}:",
+            f"domain={rule.domain!r}",
+            f"include_subdomains={rule.include_subdomains}",
+            f"methods={methods}",
+        ]
+    else:
+        parts = [
+            f"allow rule #{index}:",
+            f"domain_regex={rule.pattern.pattern!r}",
+            f"methods={methods}",
+        ]
+
+    if rule.pathname_filter is not None:
+        pathname_filter = rule.pathname_filter
+        parts.append(f"{pathname_filter.kind}={pathname_filter.source!r}")
+        if pathname_filter.kind == "pathname_pattern":
+            parts.append(f"compiled_regex={pathname_filter.pattern.pattern!r}")
+
+    return " ".join(parts)
+
+
 def load_rules(path: Path = RULES_DIR) -> list[Rule]:
     if not path.exists():
         raise FileNotFoundError(f"rules directory does not exist: {path}")
@@ -506,6 +537,7 @@ def load_rules(path: Path = RULES_DIR) -> list[Rule]:
 class Mitmwall:
     def __init__(self) -> None:
         self.rules: list[Rule] = []
+        self.rule_descriptions: tuple[str, ...] = ()
         setup_logging()
 
     def load(self, loader) -> None:  # noqa: ANN001 - mitmproxy controls this signature.
@@ -522,14 +554,26 @@ class Mitmwall:
 
     def reload_rules(self) -> None:
         try:
-            self.rules = load_rules()
+            rules = load_rules()
         except Exception as exc:
             # Fail closed: if the allowlist is missing or invalid, block all traffic.
             self.rules = []
+            self.rule_descriptions = ()
             LOGGER.error(f"failed to load {RULES_DIR}: {exc}")
             return
 
+        rule_descriptions = tuple(
+            describe_rule(index, rule) for index, rule in enumerate(rules, start=1)
+        )
+        self.rules = rules
+
+        if rule_descriptions == self.rule_descriptions:
+            return
+
+        self.rule_descriptions = rule_descriptions
         LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_DIR}")
+        for description in self.rule_descriptions:
+            LOGGER.info(description)
 
     def request(self, flow: FlowLike) -> None:
         host = flow.request.pretty_host or flow.request.host
