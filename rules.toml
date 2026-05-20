@@ -40,3 +40,6 @@ domain = "pypi.org"
 
 [[allow]]
 domain = "files.pythonhosted.org"
+
+[[allow]]
+domain = "api.githubcopilot.com"
