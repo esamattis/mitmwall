@@ -11,6 +11,8 @@ user is allowed to connect upstream.
 
 Ensure all python functions, classes etc. have doc comments.
 
+Ensure valid types by running `basedpyright`
+
 Never use any pypi packages. Only use stdlib.
 
 After changes install with ./dev-install.sh and test with ./test.sh
