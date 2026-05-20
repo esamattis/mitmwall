@@ -16,10 +16,9 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, cast
 
 import tomllib
-from mitmproxy import http
 
 RULES_PATH = Path("/opt/mitmwall/rules.toml")
 LOGGER = logging.getLogger("mitmwall")
@@ -72,6 +71,19 @@ Rule = DomainRule | RegexRule
 ALLOW_RULE_KEYS = {"domain", "domain_regex", "include_subdomains"}
 
 
+class RequestLike(Protocol):
+    pretty_host: str
+    host: str
+    method: str
+    pretty_url: str
+
+
+class FlowLike(Protocol):
+    request: RequestLike
+
+    def kill(self) -> None: ...
+
+
 def normalize_host(host: str) -> str:
     """Normalize hostnames before rule matching."""
     return host.strip().rstrip(".").lower()
@@ -114,10 +126,11 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
         if not isinstance(rule, dict):
             raise ValueError(f"allow rule #{index}: rule must be a table")
 
-        validate_allowed_keys(rule, ALLOW_RULE_KEYS, index)
+        typed_rule = cast(dict[str, Any], rule)
+        validate_allowed_keys(typed_rule, ALLOW_RULE_KEYS, index)
 
-        has_domain = "domain" in rule
-        has_domain_regex = "domain_regex" in rule
+        has_domain = "domain" in typed_rule
+        has_domain_regex = "domain_regex" in typed_rule
         if has_domain and has_domain_regex:
             raise ValueError(
                 f"allow rule #{index}: cannot set both 'domain' and 'domain_regex'"
@@ -128,9 +141,9 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
             )
 
         if has_domain:
-            validate_allowed_keys(rule, {"domain", "include_subdomains"}, index)
-            domain = require_string(rule, "domain", index)
-            include_subdomains = rule.get("include_subdomains", False)
+            validate_allowed_keys(typed_rule, {"domain", "include_subdomains"}, index)
+            domain = require_string(typed_rule, "domain", index)
+            include_subdomains = typed_rule.get("include_subdomains", False)
             if not isinstance(include_subdomains, bool):
                 raise ValueError(
                     f"allow rule #{index}: 'include_subdomains' must be a boolean"
@@ -144,8 +157,8 @@ def load_rules(path: Path = RULES_PATH) -> list[Rule]:
                 )
             )
         else:
-            validate_allowed_keys(rule, {"domain_regex"}, index)
-            domain_regex = require_string(rule, "domain_regex", index)
+            validate_allowed_keys(typed_rule, {"domain_regex"}, index)
+            domain_regex = require_string(typed_rule, "domain_regex", index)
             try:
                 pattern = re.compile(domain_regex, re.IGNORECASE)
             except re.error as exc:
@@ -187,7 +200,7 @@ class Mitmwall:
 
         self.log_info(f"loaded {len(self.rules)} allow rule(s) from {RULES_PATH}")
 
-    def request(self, flow: http.HTTPFlow) -> None:
+    def request(self, flow: FlowLike) -> None:
         host = flow.request.pretty_host or flow.request.host
         method = flow.request.method
         url = flow.request.pretty_url
