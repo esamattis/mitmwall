@@ -124,12 +124,18 @@ methods = ["GET"]
 domain = "webhook.example.com"
 methods = "ANY"
 
-# Allow POST only to GitHub repository upload-pack pathnames owned by esamattis.
+# Allow `git fetch` for repositories owned by `esamattis`.
 # The :repo parameter matches exactly one pathname segment before .git.
 [[allow]]
 domain = "github.com"
-pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
 methods = ["POST"]
+pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
+
+# Allow `git push` for repositories owned by `esamattis`.
+[[allow]]
+domain = "github.com"
+methods = ["POST"]
+pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
 
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]

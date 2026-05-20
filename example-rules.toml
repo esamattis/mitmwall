@@ -22,6 +22,19 @@
 domain = "github.com"
 include_subdomains = false
 
+
+# Allow `git fetch` for `esamattis`
+[[allow]]
+domain = "github.com"
+methods = ["POST"]
+pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
+
+# Allow `git push` for `esamattis`
+[[allow]]
+domain = "github.com"
+methods = ["POST"]
+pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
+
 # Pathname pattern-restricted rule: allows POST to a specific pie.dev test
 # pathname shape. The :slug parameter matches exactly one pathname segment.
 [[allow]]
