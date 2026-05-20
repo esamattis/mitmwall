@@ -14,32 +14,35 @@
 # Exact domain only: allows github.com, but not api.github.com.
 [[allow]]
 domain = "github.com"
-include_subdomains = false
+include_subdomains = true
 
 [[allow]]
 domain = "downloads.mitmproxy.org"
 include_subdomains = false
 
-# Domain and all subdomains: allows esamatti.fi and www.esamatti.fi.
-[[allow]]
-domain = "esamatti.fi"
-include_subdomains = true
-
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
 domain_regex = '(^|\.)ipinfo\.io$'
 
+## Rust
 [[allow]]
 domain = "index.crates.io"
 
 [[allow]]
 domain = "registry.npmjs.org"
 
+## PyPI
 [[allow]]
 domain = "pypi.org"
-
 [[allow]]
 domain = "files.pythonhosted.org"
 
+## Opencode
 [[allow]]
 domain = "api.githubcopilot.com"
+[[allow]]
+domain = "models.dev"
+
+## Homebrew / Linuxbrew
+[[allow]]
+domain = "formulae.brew.sh"
