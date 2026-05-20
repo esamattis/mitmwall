@@ -1,17 +1,18 @@
 # mitmwall
 
-mitmwall locks down outbound network access on an Ubuntu server by combining
-Linux packet filtering (iptables) with [mitmproxy](https://mitmproxy.org/)
-running as a transparent proxy.
+mitmwall is a transparent outbound firewall for Ubuntu. It combines `iptables`
+with [mitmproxy](https://mitmproxy.org/) to ensure that only explicitly allowed
+hostnames can be reached over HTTP and HTTPS. Any request to a hostname not on
+the allowlist is blocked. This prevents:
 
-The goal is to prevent sensitive data from leaking out of the machine.
-Misbehaving AI agents, compromised npm packages, or other untrusted local
-processes may attempt to exfiltrate credentials, API keys, or source code through
-unexpected outbound connections. mitmwall stops this by transparently redirecting
-all outbound HTTP and HTTPS traffic through mitmproxy and blocking any request
-whose destination hostname does not match an allow rule.
+- **Data exfiltration** — compromised npm packages, rogue AI agents, or other
+  untrusted processes stealing credentials, API keys, or source code.
+- **Backdoor connections** — malware phoning home to command-and-control servers.
 
-"mitmwall" is a word play for mitmproxy + firewall = mitmwall
+The built-in mitmweb interface can be used to monitor all proxied traffic in
+real time.
+
+The name is a wordplay for mitmproxy + firewall = mitmwall.
 
 ## How?
 
