@@ -3,6 +3,7 @@
 
 import socket
 import ssl
+import threading
 import unittest
 import urllib.error
 import urllib.request
@@ -36,6 +37,13 @@ class MitmwallNetworkTests(unittest.TestCase):
             reachable, error = self._url_reachability(url)
             self.assertFalse(
                 reachable, f"{name} should have been blocked but reached successfully"
+            )
+
+    def assert_tcp_allowed(self, name, host, port):
+        with self.subTest(name=name, host=host, port=port):
+            print(f"Testing TCP allowed: {name} ({host}:{port})")
+            self.assertTrue(
+                self._tcp_is_reachable(host, port), f"{name} should have been allowed"
             )
 
     def assert_tcp_blocked(self, name, host, port):
@@ -83,6 +91,13 @@ class MitmwallNetworkTests(unittest.TestCase):
             "direct DNS-over-TCP connection to public resolver", PUBLIC_DNS_SERVER, 53
         )
 
+    def test_tcp_connections_to_localhost_are_allowed(self):
+        host, port, stop_server = self._start_local_tcp_server()
+        try:
+            self.assert_tcp_allowed("loopback TCP connection", host, port)
+        finally:
+            stop_server()
+
     def _url_reachability(self, url):
         request = HeadRequest(url, headers={"User-Agent": "mitmwall-test/1.0"})
         # The installer adds mitmproxy's CA to Ubuntu's system trust bundle with
@@ -112,6 +127,40 @@ class MitmwallNetworkTests(unittest.TestCase):
                 return True
         except OSError:
             return False
+
+    def _start_local_tcp_server(self):
+        ready = threading.Event()
+        stopped = threading.Event()
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(CONNECT_TIMEOUT_SECONDS)
+        host, port = server.getsockname()
+
+        def serve_one_connection():
+            ready.set()
+            try:
+                connection, _ = server.accept()
+                connection.close()
+            except OSError:
+                pass
+            finally:
+                server.close()
+                stopped.set()
+
+        thread = threading.Thread(target=serve_one_connection, daemon=True)
+        thread.start()
+        ready.wait(CONNECT_TIMEOUT_SECONDS)
+
+        def stop_server():
+            try:
+                server.close()
+            except OSError:
+                pass
+            stopped.wait(CONNECT_TIMEOUT_SECONDS)
+
+        return host, port, stop_server
 
     def _dns_udp_query_is_answered(self, server, hostname):
         query = self._build_dns_query(hostname)

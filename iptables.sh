@@ -40,6 +40,7 @@ chain=MITMWALL_OUTPUT
 # - Allow established/related packets so inbound services such as SSH keep working.
 # - Allow the proxy user to make outbound upstream connections.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
+# - Allow all loopback traffic so localhost services remain reachable.
 # - Allow other users to connect only to the local proxy and web UI ports on this host.
 # - Allow DNS only to local resolvers so clients can resolve hostnames.
 # - Drop all other new outbound traffic so applications cannot bypass the proxy.
@@ -74,8 +75,11 @@ add_redirect_rule() {
     # All other local users trying to connect directly to TCP port 80 or 443 are
     # transparently redirected to `$proxy_port`, where mitmproxy can inspect the
     # HTTP(S) hostname and enforce `/opt/mitmwall/rules.toml`.
-    if ! "$table_cmd" -t nat -C OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; then
-        "$table_cmd" -t nat -A OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
+    #
+    # Exclude loopback traffic from the redirect so localhost services remain
+    # reachable on their real ports instead of being captured by mitmproxy.
+    if ! "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; then
+        "$table_cmd" -t nat -A OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
     fi
 }
 
@@ -86,16 +90,16 @@ remove_redirect_rule() {
     table_cmd=$1
     dport=$2
 
-    while "$table_cmd" -t nat -C OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; do
-        "$table_cmd" -t nat -D OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
+    while "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; do
+        "$table_cmd" -t nat -D OUTPUT -p tcp ! -o lo -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
     done
 }
 
 # Enforce the outbound allowlist. Established/related packets are allowed so
 # replies from inbound connections (for example SSH) are not broken. The proxy
-# user is allowed to reach the network, clients are allowed to reach the local
-# proxy and web UI on this host and DNS, and every other new outbound connection
-# is blocked.
+# user is allowed to reach the network, loopback traffic is allowed so localhost
+# services remain reachable, clients are allowed to reach the local proxy and web
+# UI on this host and DNS, and every other new outbound connection is blocked.
 add_output_filter() {
     table_cmd=$1
 
@@ -122,6 +126,11 @@ add_output_filter() {
     # process make upstream DNS queries; regular applications are limited below
     # to talking to local resolver addresses only.
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner systemd-resolve -j ACCEPT
+
+    # Permit connections to services on this machine. This keeps localhost and
+    # other loopback traffic working while the default policy below still blocks
+    # outbound bypass attempts to remote hosts.
+    "$table_cmd" -t filter -A "$chain" -o lo -j ACCEPT
 
     # Permit local clients to reach the transparent mitmproxy listener. The
     # destination must be LOCAL so this does not become a general allow rule for
@@ -156,9 +165,9 @@ add_output_filter() {
 
 # Remove the outbound allowlist/blocklist chain installed by the "add" action.
 # That chain allows established/related packets so inbound services such as SSH
-# keep working, allows the proxy user to reach upstream hosts, allows other
-# users to connect to the local proxy and web UI ports on this host and DNS, and
-# blocks all other new outbound traffic.
+# keep working, allows the proxy user to reach upstream hosts, allows loopback
+# traffic, allows other users to connect to the local proxy and web UI ports on
+# this host and DNS, and blocks all other new outbound traffic.
 remove_output_filter() {
     table_cmd=$1
 
