@@ -11,6 +11,8 @@ from pathlib import Path
 CONNECT_TIMEOUT_SECONDS = 5
 REQUEST_TIMEOUT_SECONDS = 20
 SYSTEM_CA_CERTIFICATES = Path("/etc/ssl/certs/ca-certificates.crt")
+PUBLIC_DNS_SERVER = "1.1.1.1"
+DNS_QUERY_TIMEOUT_SECONDS = 5
 
 
 class HeadRequest(urllib.request.Request):
@@ -43,6 +45,14 @@ class MitmwallNetworkTests(unittest.TestCase):
                 self._tcp_is_reachable(host, port), f"{name} should have been blocked"
             )
 
+    def assert_dns_query_blocked(self, name, server, hostname):
+        with self.subTest(name=name, server=server, hostname=hostname):
+            print(f"Testing DNS blocked: {name} ({hostname} via {server})")
+            self.assertFalse(
+                self._dns_udp_query_is_answered(server, hostname),
+                f"{name} should have been blocked but returned a DNS response",
+            )
+
     def test_exact_domain_rule_is_allowed(self):
         self.assert_url_allowed("exact domain rule", "https://github.com/")
 
@@ -62,6 +72,16 @@ class MitmwallNetworkTests(unittest.TestCase):
 
     def test_direct_ssh_to_github_is_blocked(self):
         self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
+
+    def test_direct_dns_queries_to_public_resolver_are_blocked(self):
+        self.assert_dns_query_blocked(
+            "direct DNS-over-UDP query to public resolver",
+            PUBLIC_DNS_SERVER,
+            "github.com",
+        )
+        self.assert_tcp_blocked(
+            "direct DNS-over-TCP connection to public resolver", PUBLIC_DNS_SERVER, 53
+        )
 
     def _url_reachability(self, url):
         request = HeadRequest(url, headers={"User-Agent": "mitmwall-test/1.0"})
@@ -92,6 +112,31 @@ class MitmwallNetworkTests(unittest.TestCase):
                 return True
         except OSError:
             return False
+
+    def _dns_udp_query_is_answered(self, server, hostname):
+        query = self._build_dns_query(hostname)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(DNS_QUERY_TIMEOUT_SECONDS)
+                sock.sendto(query, (server, 53))
+                response, _ = sock.recvfrom(512)
+                return len(response) >= 2 and response[:2] == query[:2]
+        except OSError:
+            return False
+
+    def _build_dns_query(self, hostname):
+        labels = hostname.rstrip(".").split(".")
+        question = b"".join(
+            len(label).to_bytes(1, "big") + label.encode("ascii") for label in labels
+        )
+        question += b"\x00"
+        header = b"\x12\x34"  # Transaction ID.
+        header += b"\x01\x00"  # Standard recursive query.
+        header += b"\x00\x01"  # One question.
+        header += b"\x00\x00"  # No answers.
+        header += b"\x00\x00"  # No authority records.
+        header += b"\x00\x00"  # No additional records.
+        return header + question + b"\x00\x01" + b"\x00\x01"  # A record, IN class.
 
 
 if __name__ == "__main__":
