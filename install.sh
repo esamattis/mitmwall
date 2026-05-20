@@ -112,7 +112,7 @@ if [ ! -f "$mitmweb_config_file" ]; then
     # Keep the generated password private from the moment the file is created.
     # Without this, the file could briefly be world-readable before chmod below.
     umask 077
-    password=$(openssl rand -base64 20 | tr '+/' '-_' | tr -d '=')
+    password=$(openssl rand -base64 20 | tr -d '+/=' )
     generated_web_password=$password
     printf 'web_password: "%s"\n' "$password" >"$mitmweb_config_file"
 fi
