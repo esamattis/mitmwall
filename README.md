@@ -81,7 +81,7 @@ sudo journalctl -u mitmwall.service -f
 
 Rules are stored in `/opt/mitmwall/rules.toml`. The file is TOML and contains
 zero or more `[[allow]]` tables. Traffic is blocked unless the request hostname
-matches at least one allow rule.
+and HTTP method match at least one allow rule.
 
 ```toml
 # Each [[allow]] table must use exactly one of:
@@ -89,19 +89,32 @@ matches at least one allow rule.
 # - domain_regex: a non-empty Python regular expression string
 #
 # include_subdomains is optional, valid only with domain, and defaults to false.
+# methods is optional and defaults to ["GET", "HEAD"]. Set methods = "ANY"
+# to allow all HTTP methods for a matching host.
 # Unsupported keys are rejected. A rule cannot contain both domain and domain_regex.
 # Hostnames are normalized before matching by trimming whitespace, removing a
-# trailing dot, and lowercasing.
+# trailing dot, and lowercasing. Methods are normalized by trimming whitespace
+# and uppercasing.
 
-# Exact domain only: allows github.com, but not api.github.com.
+# Exact domain only: allows GET and HEAD to github.com, but not api.github.com.
 [[allow]]
 domain = "github.com"
 include_subdomains = false
 
-# Domain and all subdomains: allows example.com and api.example.com.
+# Domain and all subdomains: allows GET and HEAD to example.com and api.example.com.
 [[allow]]
 domain = "example.com"
 include_subdomains = true
+
+# Method-restricted rule: allows only GET requests to pie.dev.
+[[allow]]
+domain = "pie.dev"
+methods = ["GET"]
+
+# Allow every HTTP method for a matching host.
+[[allow]]
+domain = "webhook.example.com"
+methods = "ANY"
 
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
@@ -170,15 +183,17 @@ changing subdomains.
 
 ### Allowlisted-domain exfiltration
 
-Allowed domains can still be used for credentials dumping. For example, if
-`github.com` is allowed, malware could post secrets to an attacker-controlled
-issue, gist, repository, or workflow log without violating the hostname
-allowlist.
+Allowed domains can still be used for credentials dumping, especially when a
+rule allows write-capable methods such as `POST`, `PUT`, or `PATCH`, or uses
+`methods = "ANY"`. For example, if `github.com` is allowed with a method that
+can create or update content, malware could post secrets to an
+attacker-controlled issue, gist, repository, or workflow log without violating
+the hostname and method allowlist.
 
-mitmwall currently allows or blocks by hostname. It does not prove that the
-account, repository, bucket, endpoint, or request body is safe. Treat every
-allowed domain as a possible exfiltration channel unless that service also
-enforces where data may be written.
+The default method policy only allows `GET` and `HEAD`, which blocks many common
+write paths. This reduces accidental exfiltration risk, but it does not make an
+allowed domain safe: secrets may still be leaked through URLs, query strings,
+headers, or any endpoint where an allowed method causes data to leave the host.
 
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm

@@ -9,10 +9,8 @@ and HTTPS traffic to the local transparent proxy, and `mitmwall_addon.py` loads
 users can only make DNS queries and proxied web requests; the proxy user is
 allowed to connect upstream.
 
-After changes install with ./dev-install.sh
-
-test with ./test.sh
+After changes install with ./dev-install.sh and test with ./test.sh
 
 See logs with:
 
-  sudo journalctl -u mitmwall
+sudo journalctl -u mitmwall --no-pager
