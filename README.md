@@ -161,6 +161,12 @@ domain = "github.com"
 methods = ["POST"]
 pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
 
+# Same for `git push`
+[[allow]]
+domain = "github.com"
+methods = ["POST"]
+pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
+
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
 domain_regex = '(^|\.)ipinfo\.io$'
@@ -215,14 +221,35 @@ sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 
 ## How secure this is?
 
-Well, first of, AI agents helped creating this. The security model relies on
-Linux user permissions: Only root and the `mitmwall` user can access the network
-freely. Root is intentionally exempt so administrators can manage and troubleshoot
-the host without going through the proxy. So if the attacker can do privilege
-escalation:
+Well, first of, AI agents helped creating this. So there is that 😅
+
+The security model relies on Linux user permissions: Only root and the
+`mitmwall` user can access the network freely. Root is intentionally exempt so
+administrators can manage and troubleshoot the host without going through the
+proxy. So if the attacker can do privilege escalation:
 
   - to the `mitmwall` user they can access the network
   - to root they can access the network and can just stop the service
+
+### Allowlisted-domain exfiltration
+
+Allowed domains can still be used for credentials dumping, especially when a
+rule allows write-capable methods such as `POST`, `PUT`, or `PATCH`, or uses
+`methods = "ANY"`. For example, if `github.com` is allowed with a method that
+can create or update content, malware could post secrets to an
+attacker-controlled issue, gist, repository, or workflow log without violating
+the hostname and method allowlist.
+
+The default method policy only allows `GET` and `HEAD`, which blocks many common
+write paths. When a write-capable method is needed, prefer narrowing the rule
+with `pathname_pattern` or `pathname_regex` instead of allowing the whole domain.
+For example, a GitHub rule can allow only the repository path needed for a Git
+operation rather than every issue, gist, repository, or workflow endpoint on the
+host.
+
+Pathname filters reduce accidental exfiltration risk, but they do not make an
+allowed domain safe: secrets may still be leaked through URLs, query strings,
+headers, or any endpoint where an allowed method causes data to leave the host.
 
 ### DNS leaks
 
@@ -246,26 +273,6 @@ The proxy would need to apply policy before forwarding a name upstream, for
 example by allowing only domains that match the same allowlist used for web
 traffic and rejecting suspicious names such as long, high-entropy, or constantly
 changing subdomains.
-
-### Allowlisted-domain exfiltration
-
-Allowed domains can still be used for credentials dumping, especially when a
-rule allows write-capable methods such as `POST`, `PUT`, or `PATCH`, or uses
-`methods = "ANY"`. For example, if `github.com` is allowed with a method that
-can create or update content, malware could post secrets to an
-attacker-controlled issue, gist, repository, or workflow log without violating
-the hostname and method allowlist.
-
-The default method policy only allows `GET` and `HEAD`, which blocks many common
-write paths. When a write-capable method is needed, prefer narrowing the rule
-with `pathname_pattern` or `pathname_regex` instead of allowing the whole domain.
-For example, a GitHub rule can allow only the repository path needed for a Git
-operation rather than every issue, gist, repository, or workflow endpoint on the
-host.
-
-Pathname filters reduce accidental exfiltration risk, but they do not make an
-allowed domain safe: secrets may still be leaked through URLs, query strings,
-headers, or any endpoint where an allowed method causes data to leave the host.
 
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm
