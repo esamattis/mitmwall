@@ -1,7 +1,3 @@
-# Agent notes
-
-## Architecture
-
 mitmwall is a transparent outbound firewall for Ubuntu. `systemd` runs `mitmweb`
 as the dedicated `mitmwall` user, `iptables`/`ip6tables` redirect outbound HTTP
 and HTTPS traffic to the local transparent proxy, and `mitmwall_addon.py` loads
