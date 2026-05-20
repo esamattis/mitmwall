@@ -1,7 +1,7 @@
 # mitmwall
 
-mitmwall is a transparent outbound firewall for Ubuntu. It combines `iptables`
-with [mitmproxy](https://mitmproxy.org/) to ensure that only explicitly allowed
+mitmwall is a outbound firewall/proxy for Ubuntu. It combines `iptables` with
+[mitmproxy](https://mitmproxy.org/) to ensure that only explicitly allowed
 HTTP(s) routes can be reached. Any network connection that does not match the
 allowlist is blocked. This prevents:
 
