@@ -178,7 +178,7 @@ class Mitmwall:
         setup_logging()
 
     def load(self, loader) -> None:  # noqa: ANN001 - mitmproxy controls this signature.
-        self.log_info("addon loaded")
+        LOGGER.info("addon loaded")
         self.reload_rules()
 
     def running(self) -> None:
@@ -195,24 +195,24 @@ class Mitmwall:
         except Exception as exc:
             # Fail closed: if the allowlist is missing or invalid, block all traffic.
             self.rules = []
-            self.log_error(f"failed to load {RULES_PATH}: {exc}")
+            LOGGER.error(f"failed to load {RULES_PATH}: {exc}")
             return
 
-        self.log_info(f"loaded {len(self.rules)} allow rule(s) from {RULES_PATH}")
+        LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_PATH}")
 
     def request(self, flow: FlowLike) -> None:
         host = flow.request.pretty_host or flow.request.host
         method = flow.request.method
         url = flow.request.pretty_url
-        self.log_debug(f"request method={method} host={host} url={url}")
+        LOGGER.debug(f"request method={method} host={host} url={url}")
 
         result = self.is_allowed(host)
         if result.allowed:
-            self.log_debug(f"allowed host={host} rule={result.rule_name}")
+            LOGGER.debug(f"allowed host={host} rule={result.rule_name}")
             return
 
         flow.kill()
-        self.log_warning(
+        LOGGER.warning(
             f"blocked host={host} method={method} url={url}; no allow rule matched"
         )
 
@@ -222,18 +222,6 @@ class Mitmwall:
             if rule.matches(normalized_host):
                 return MatchResult(allowed=True, rule_name=rule.name)
         return MatchResult(allowed=False)
-
-    def log_debug(self, message: str) -> None:
-        LOGGER.debug(message)
-
-    def log_info(self, message: str) -> None:
-        LOGGER.info(message)
-
-    def log_warning(self, message: str) -> None:
-        LOGGER.warning(message)
-
-    def log_error(self, message: str) -> None:
-        LOGGER.error(message)
 
 
 addons = [Mitmwall()]
