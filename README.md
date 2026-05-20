@@ -5,8 +5,9 @@ mitmwall is a outbound firewall/proxy for Ubuntu. It combines `iptables` with
 HTTP(s) routes can be reached. Any network connection that does not match the
 allowlist is blocked. This prevents:
 
-- **Data exfiltration** — compromised npm packages, rogue AI agents, or other
-  untrusted processes stealing credentials, API keys, or source code.
+- **Data exfiltration** — compromised npm/pypi/cargo etc. packages, rogue AI
+  agents, or other untrusted processes stealing credentials, API keys, or source
+  code.
 - **Backdoor connections** — malware phoning home to command-and-control servers.
 
 The built-in mitmweb interface can be used to monitor all proxied traffic in
