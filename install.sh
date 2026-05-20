@@ -29,7 +29,8 @@ user=mitmwall
 
 # Select the prebuilt mitmproxy archive that matches the host CPU architecture.
 # Unsupported architectures stop here instead of downloading an incompatible
-# binary that would fail later during service startup.
+# binary that would fail later during service startup. Sadly the mitmproxy
+# package on Ubuntu is broken so we cannot use that.
 case "$(uname -m)" in
     x86_64|amd64)
         url=https://downloads.mitmproxy.org/12.2.3/mitmproxy-12.2.3-linux-x86_64.tar.gz
