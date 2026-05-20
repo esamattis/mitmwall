@@ -2,18 +2,40 @@
 
 set -eu
 
+program=$(basename -- "$0")
+
+usage() {
+    echo "usage: $program {add|clear}" >&2
+}
+
+if [ "$#" -ne 1 ]; then
+    usage
+    exit 2
+fi
+
+action=$1
+case "$action" in
+    add|clear)
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac
+
 if [ "$(id -u)" -ne 0 ]; then
-    echo "add-iptables.sh: must be run as root" >&2
+    echo "$program: must be run as root" >&2
     exit 1
 fi
 
 user=mitmwall
 proxy_port=58080
 web_port=58081
+chain=MITMWALL_OUTPUT
 
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
-# Policy installed by this script:
+# Policy installed by the "add" action:
 # - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
 # - Allow the proxy user to make outbound upstream connections.
@@ -22,16 +44,18 @@ web_port=58081
 # - Allow DNS only to local resolvers so clients can resolve hostnames.
 # - Drop all other new outbound traffic so applications cannot bypass the proxy.
 
-# Enable IPv4 and IPv6 forwarding so the kernel will route packets that are
-# transparently intercepted by mitmproxy back out to their original upstream
-# destinations.
-sysctl -w net.ipv4.ip_forward=1
-sysctl -w net.ipv6.conf.all.forwarding=1
+enable_forwarding() {
+    # Enable IPv4 and IPv6 forwarding so the kernel will route packets that are
+    # transparently intercepted by mitmproxy back out to their original upstream
+    # destinations.
+    sysctl -w net.ipv4.ip_forward=1
+    sysctl -w net.ipv6.conf.all.forwarding=1
 
-# Disable IPv4 ICMP redirects. This host is intentionally acting as the gateway
-# for intercepted traffic, and redirects could teach clients a bypass path that
-# avoids the transparent proxy/firewall policy.
-sysctl -w net.ipv4.conf.all.send_redirects=0
+    # Disable IPv4 ICMP redirects. This host is intentionally acting as the gateway
+    # for intercepted traffic, and redirects could teach clients a bypass path that
+    # avoids the transparent proxy/firewall policy.
+    sysctl -w net.ipv4.conf.all.send_redirects=0
+}
 
 # Capture direct outbound HTTP/HTTPS attempts from non-proxy users and
 # transparently redirect them to the local proxy.
@@ -55,6 +79,18 @@ add_redirect_rule() {
     fi
 }
 
+# Remove the transparent HTTP/HTTPS redirects installed by the "add" action.
+# These redirects capture direct outbound web traffic from non-proxy users and
+# send it to the local proxy port.
+remove_redirect_rule() {
+    table_cmd=$1
+    dport=$2
+
+    while "$table_cmd" -t nat -C OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; do
+        "$table_cmd" -t nat -D OUTPUT -p tcp -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
+    done
+}
+
 # Enforce the outbound allowlist. Established/related packets are allowed so
 # replies from inbound connections (for example SSH) are not broken. The proxy
 # user is allowed to reach the network, clients are allowed to reach the local
@@ -62,7 +98,6 @@ add_redirect_rule() {
 # is blocked.
 add_output_filter() {
     table_cmd=$1
-    chain=MITMWALL_OUTPUT
 
     if ! "$table_cmd" -t filter -L "$chain" >/dev/null 2>&1; then
         "$table_cmd" -t filter -N "$chain"
@@ -119,10 +154,51 @@ add_output_filter() {
     fi
 }
 
-add_redirect_rule iptables 80
-add_redirect_rule iptables 443
-add_redirect_rule ip6tables 80
-add_redirect_rule ip6tables 443
+# Remove the outbound allowlist/blocklist chain installed by the "add" action.
+# That chain allows established/related packets so inbound services such as SSH
+# keep working, allows the proxy user to reach upstream hosts, allows other
+# users to connect to the local proxy and web UI ports on this host and DNS, and
+# blocks all other new outbound traffic.
+remove_output_filter() {
+    table_cmd=$1
 
-add_output_filter iptables
-add_output_filter ip6tables
+    while "$table_cmd" -t filter -C OUTPUT -j "$chain" >/dev/null 2>&1; do
+        "$table_cmd" -t filter -D OUTPUT -j "$chain"
+    done
+
+    if "$table_cmd" -t filter -L "$chain" >/dev/null 2>&1; then
+        "$table_cmd" -t filter -F "$chain"
+        "$table_cmd" -t filter -X "$chain"
+    fi
+}
+
+add_rules() {
+    enable_forwarding
+
+    add_redirect_rule iptables 80
+    add_redirect_rule iptables 443
+    add_redirect_rule ip6tables 80
+    add_redirect_rule ip6tables 443
+
+    add_output_filter iptables
+    add_output_filter ip6tables
+}
+
+clear_rules() {
+    remove_redirect_rule iptables 80
+    remove_redirect_rule iptables 443
+    remove_redirect_rule ip6tables 80
+    remove_redirect_rule ip6tables 443
+
+    remove_output_filter iptables
+    remove_output_filter ip6tables
+}
+
+case "$action" in
+    add)
+        add_rules
+        ;;
+    clear)
+        clear_rules
+        ;;
+esac

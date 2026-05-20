@@ -107,10 +107,10 @@ chown "$user" "$mitmproxy_confdir" "$mitmweb_config_file"
 chmod 0700 "$mitmproxy_confdir"
 chmod 0600 "$mitmweb_config_file"
 
-# Install the helper scripts used by systemd. add-iptables.sh and
-# clear-iptables.sh are run as privileged ExecStartPre/ExecStopPost hooks, while
-# start.sh launches mitmweb as the unprivileged mitmwall user.
-install -m 0755 "$scriptdir/add-iptables.sh" "$scriptdir/clear-iptables.sh" "$scriptdir/start.sh" "$optdir/"
+# Install the helper scripts used by systemd. iptables.sh is run as privileged
+# ExecStartPre/ExecStopPost hooks, while start.sh launches mitmweb as the
+# unprivileged mitmwall user.
+install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$optdir/"
 
 # Install the mitmproxy addon that enforces the allow/block rules.
 install -m 0644 "$scriptdir/mitmwall_addon.py" "$optdir/"
@@ -137,9 +137,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$user
-ExecStartPre=+$optdir/add-iptables.sh
+ExecStartPre=+$optdir/iptables.sh add
 ExecStart=$optdir/start.sh
-ExecStopPost=+$optdir/clear-iptables.sh
+ExecStopPost=+$optdir/iptables.sh clear
 Restart=on-failure
 
 [Install]
