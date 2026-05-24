@@ -218,6 +218,15 @@ After editing files in `/etc/mitmwall/rules.d`, restart the service:
 sudo systemctl restart mitmwall
 ```
 
+## Credential injection
+
+`inject_headers` can add custom headers to requests, which can be used to
+transparently supply credentials. This can be a powerful way to avoid exposing
+credentials to untrusted users. A typical workflow is to first configure the
+tools that require the credentials, inspect in mitmweb how the credentials are
+used, write a matching rule that injects the credential headers, and finally
+replace the real credentials with dummy values so the tool still thinks
+credentials are configured.
 
 ## System environment variables
 
