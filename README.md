@@ -327,3 +327,5 @@ changing subdomains.
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm
 registry lately.
+
+UPDATE: mitmproxy actually has [dns-support](https://docs.mitmproxy.org/stable/addons/examples/#dns-simple)
