@@ -324,8 +324,10 @@ example by allowing only domains that match the same allowlist used for web
 traffic and rejecting suspicious names such as long, high-entropy, or constantly
 changing subdomains.
 
+UPDATE: mitmproxy actually has
+[dns-support](https://docs.mitmproxy.org/stable/addons/examples/#dns-simple).
+Need to look into it.
+
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm
 registry lately.
-
-UPDATE: mitmproxy actually has [dns-support](https://docs.mitmproxy.org/stable/addons/examples/#dns-simple)
