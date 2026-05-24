@@ -167,10 +167,13 @@ rm -rf "$optdir/mitmwall_addon" "$addon_dir"
 install -d -m 0755 "$addon_dir"
 install -m 0644 "$scriptdir"/mitmproxy_addon/*.py "$addon_dir/"
 
-# Install the repository-provided example rules into the rules directory. The
-# addon loads every *.toml file in this directory, so operators can add their own
-# files alongside this managed example file.
-install -o root -g "$user_group" -m 0640 "$scriptdir/example-rules.toml" "$rulesdir/examples.toml"
+# Install the repository-provided example rules into the rules directory. Rule
+# files are loaded in alphabetical filename order, so the numeric prefix gives
+# operators a predictable place for the managed examples relative to their own
+# files. Remove the legacy managed filename first so upgrades do not leave a
+# duplicate example ruleset behind.
+rm -f "$rulesdir/examples.toml"
+install -o root -g "$user_group" -m 0640 "$scriptdir/example-rules.toml" "$rulesdir/5-examples.toml"
 
 # Register the systemd service. The iptables hooks are prefixed with '+' so they
 # run with elevated privileges even though the main service process runs as the
@@ -306,6 +309,9 @@ cat <<EOF
 
 mitmwall installed successfully.
 
+Rule files in /etc/mitmwall/rules.d are loaded in alphabetical filename order.
+The managed example rules were installed as /etc/mitmwall/rules.d/5-examples.toml.
+
 To enable mitmwall on boot:
   sudo systemctl enable mitmwall
 
@@ -324,7 +330,8 @@ To check mitmwall status:
 To view logs:
   sudo journalctl -u mitmwall --no-pager
 
-The CA environment variables in /etc/environment apply to new login sessions.
+Apply the new CA environment variables:
+   . /etc/profile.d/mitmwall.sh
 
 EOF
 

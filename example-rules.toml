@@ -1,5 +1,5 @@
 # mitmwall allow rules
-# Installed to /etc/mitmwall/rules.d/examples.toml.
+# Installed to /etc/mitmwall/rules.d/5-examples.toml.
 # All outbound HTTP/HTTPS traffic is blocked unless it matches an [[allow]] rule.
 #
 # ─── Syntax ───────────────────────────────────────────────────────────────────
@@ -9,6 +9,10 @@
 # include_subdomains = true         # Also match *.example.com (default: false).
 # methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
 #                                   # Use methods = "ANY" to allow all methods.
+# inject_headers = [                     # Add or replace upstream request headers.
+#   "Authorization: Secret",
+#   "X-Trace-Id: example",
+# ]
 # pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
 # pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
 #
@@ -21,6 +25,10 @@
 # * Each [[allow]] must have exactly one of `domain` or `domain_regex`.
 # * `include_subdomains` is only valid with `domain`.
 # * At most one of `pathname_pattern` or `pathname_regex` per rule.
+# * `inject_headers` must be a non-empty list of "Header-Name: value" strings.
+#   Matching rules add or replace those request headers before the upstream request.
+#   If multiple rules match, headers come from the first matching rule that
+#   defines `inject_headers`; they are not merged across matching rules.
 # * `domain_regex` is matched case-insensitively (partial match).
 # * `pathname_regex` need only match part of the pathname (partial match).
 # * `pathname_pattern` must match the entire pathname (full match); supports
@@ -35,9 +43,20 @@
 domain = "github.com"
 [[allow]]
 domain = "ghcr.io"
+# Include subdomains so hosts like raw.githubusercontent.com are allowed.
 [[allow]]
 domain = "githubusercontent.com"
 include_subdomains = true
+[[allow]]
+domain = "api.github.com"
+
+ # Read-only and write queries in GraphQL are both POST :(
+ # Limit to our own GraphQL API key
+# [[allow]]
+# domain = "api.github.com"
+# pathname_pattern = "/graphql"
+# methods = ["POST"]
+# inject_headers = ["Authorization: token github_pat_... "]
 
 
 # Allow `git fetch` for `esamattis`
@@ -47,10 +66,10 @@ methods = ["POST"]
 pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
 
 # Allow `git push` for `esamattis`
-[[allow]]
-domain = "github.com"
-methods = ["POST"]
-pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
+# [[allow]]
+# domain = "github.com"
+# methods = ["POST"]
+# pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
 
 # Pathname pattern-restricted rule: allows POST to a specific pie.dev test
 # pathname shape. The :slug parameter matches exactly one pathname segment.
@@ -66,12 +85,21 @@ domain = "pie.dev"
 pathname_regex = '^/pathname-regex/[^/]+/info$'
 methods = ["POST"]
 
+# Exact host only: esamatti.fi is allowed, but www.esamatti.fi is blocked.
 [[allow]]
 domain = "esamatti.fi"
-include_subdomains = true
 
 [[allow]]
 domain = "downloads.mitmproxy.org"
+
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = "/headers"
+methods = ["GET"]
+inject_headers = [
+    "Authorization: Secret",
+    "X-Mitmwall-Test: enabled",
+]
 
 [[allow]]
 domain = "pie.dev"

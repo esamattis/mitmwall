@@ -92,10 +92,10 @@ sudo journalctl -u mitmwall.service -f
 Rules are stored as TOML files in `/etc/mitmwall/rules.d`. Each `*.toml` file
 can contain zero or more `[[allow]]` tables. Traffic is blocked unless the
 request hostname, HTTP method, and optional pathname filter match at least one
-allow rule.
+allow rule. Files are loaded in alphabetical filename order.
 
 The [example rules](example-rules.toml) from this repository are installed to
-`/etc/mitmwall/rules.d/examples.toml`.
+`/etc/mitmwall/rules.d/5-examples.toml`.
 
 ### Syntax
 
@@ -105,8 +105,15 @@ domain = "example.com"            # Exact hostname to allow (required*).
 include_subdomains = true         # Also match *.example.com (default: false).
 methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
                                   # Use methods = "ANY" to allow all methods.
+
 pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
 pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
+
+# Add or replace upstream request headers.
+inject_headers = [
+  "Authorization: Secret",
+  "X-Trace-Id: example",
+]
 
 [[allow]]
 domain_regex = '(^|\.)example\.(com|org)$'  # Python regex for hostname (required*).
@@ -118,6 +125,7 @@ methods = "ANY"
 - Each `[[allow]]` must have exactly one of `domain` or `domain_regex`.
 - `include_subdomains` is only valid with `domain`.
 - At most one of `pathname_pattern` or `pathname_regex` per rule.
+- `inject_headers` must be a non-empty list of `Header-Name: value` strings.
 - Unknown keys are rejected.
 
 ### Matching behavior
@@ -130,7 +138,12 @@ methods = "ANY"
   - `{optional}` — optional group of tokens.
 - Hostnames are normalized before matching (trimmed, trailing dot removed,
   lowercased).
+- Exact `domain` rules do not match subdomains unless `include_subdomains = true`.
 - Methods are normalized (trimmed, uppercased).
+- `inject_headers` adds or replaces each listed request header before the
+  upstream request is sent.
+- If multiple rules match, `inject_headers` is taken from the first matching
+  rule that defines it. Headers are not merged across matching rules.
 
 ### Examples
 
@@ -138,6 +151,11 @@ methods = "ANY"
 # Exact domain only: allows GET and HEAD to github.com, but not api.github.com.
 [[allow]]
 domain = "github.com"
+
+# Another exact-only example: esamatti.fi is allowed, but www.esamatti.fi is not
+# unless include_subdomains is enabled.
+[[allow]]
+domain = "esamatti.fi"
 
 # Domain and all subdomains: allows GET and HEAD to example.com and *.example.com.
 [[allow]]
@@ -153,6 +171,16 @@ methods = ["GET"]
 [[allow]]
 domain = "webhook.example.com"
 methods = "ANY"
+
+# Add multiple headers to a specific upstream endpoint.
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = "/headers"
+methods = ["GET"]
+inject_headers = [
+  "Authorization: Secret",
+  "X-Mitmwall-Test: enabled",
+]
 
 # Allow `git fetch` for repositories owned by `esamattis`.
 # The :repo parameter matches exactly one pathname segment.
