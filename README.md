@@ -53,6 +53,8 @@ The installer creates a `mitmwall` system user, installs mitmproxy under
 installs the systemd service, generates the mitmproxy CA, and adds the CA to
 the system trust store with `update-ca-certificates`.
 
+The scripts can be also used for upgrading mitmwall.
+
 
 ## Usage
 
