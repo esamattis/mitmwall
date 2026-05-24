@@ -495,7 +495,9 @@ def load_rules(path: Path = RULES_DIR) -> list[Rule]:
         (
             child
             for child in path.iterdir()
-            if child.is_file() and child.suffix == ".toml"
+            if child.is_file()
+            and not child.name.startswith(".")
+            and child.suffix == ".toml"
         ),
         key=lambda child: child.name,
     )

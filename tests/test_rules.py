@@ -212,6 +212,30 @@ inject_headers = [
             ["first.example", "second.example"],
         )
 
+    def test_load_rules_ignores_hidden_toml_files(self) -> None:
+        """
+        Skip dot-prefixed TOML files when loading a rules directory.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rules_dir = Path(temp_dir)
+            _ = (rules_dir / ".10-hidden.toml").write_text(
+                '[[allow]]\ndomain = "hidden.example"\n',
+                encoding="utf-8",
+            )
+            _ = (rules_dir / "20-visible.toml").write_text(
+                '[[allow]]\ndomain = "visible.example"\n',
+                encoding="utf-8",
+            )
+
+            rules = load_rules(rules_dir)
+
+        self.assertTrue(all(isinstance(rule, DomainRule) for rule in rules))
+        self.assertEqual(
+            [rule.domain for rule in rules if isinstance(rule, DomainRule)],
+            ["visible.example"],
+        )
+
     def _parse_single_rule(self, content: str) -> DomainRule:
         """
         Parse one domain rule from temporary TOML content.
