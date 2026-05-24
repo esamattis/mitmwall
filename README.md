@@ -17,22 +17,27 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
 
 ## How?
 
-- systemd `mitmwall.service` starts `mitmweb` in transparent proxy mode
+- systemd `mitmwall.service` starts `mitmweb` in transparent HTTP(S) proxy mode
+  and DNS proxy mode.
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
-  - redirect outbound TCP port `80` and `443` traffic to the proxy
-  - only allow root and the dedicated `mitmwall` user to make upstream connections
+  - redirect outbound TCP port `80` and `443` traffic to the HTTP(S) proxy
+  - redirect outbound TCP/UDP port `53` traffic to the DNS proxy
+  - only allow root, the dedicated `mitmwall` user, and `systemd-resolve` to make
+    upstream connections
     - the proxy is running as the `mitmwall` user
     - root is left unrestricted for host administration and troubleshooting
-  - allow DNS only to the local resolver so clients can resolve hostnames
-    - only the `systemd-resolve` user can make DNS queries
-  - drop other new outbound traffic so applications cannot bypass the proxy
+    - `systemd-resolve` is left able to perform resolver recursion without
+      looping back into the DNS proxy
+  - drop other new outbound traffic so applications cannot bypass the proxies
 - The mitmproxy addon in `/opt/mitmwall/mitmproxy_addon/main.py` loads TOML files
-  from `/etc/mitmwall/rules.d` and kills HTTP(S) flows whose host does not
-  match the allowlist.
+  from `/etc/mitmwall/rules.d` and:
+  - kills HTTP(S) flows whose host, method, and pathname do not match the
+    allowlist
+  - refuses DNS queries whose hostname does not match any allow rule
 - `ExecStopPost` removes the firewall rules when the service stops.
 
 If `/etc/mitmwall/rules.d` is missing or any rule file is invalid, mitmwall
-fails closed and blocks all proxied HTTP(S) traffic.
+fails closed and blocks all proxied HTTP(S) traffic and DNS resolution.
 
 ## Install
 
@@ -251,6 +256,11 @@ Available settings:
 # Available log_level values: "debug", "info", "warning", "error", "critical".
 # The default is "info".
 log_level = "info"
+
+# When true, DNS queries must match allow rules. Set to false to let the addon
+# pass through all DNS queries while keeping the firewall redirection rules.
+# The default is true.
+block_dns = true
 ```
 
 Restart the service after changing addon configuration:
@@ -269,6 +279,27 @@ The password can be viewed as an administrator from the generated mitmweb config
 sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 ```
 
+## DNS filtering
+
+mitmwall runs mitmproxy in both transparent HTTP(S) mode and DNS mode. The
+firewall redirects ordinary users' TCP/UDP port 53 traffic, including attempts to
+query local resolvers such as `127.0.0.53` or public resolvers such as `1.1.1.1`,
+to mitmproxy's local DNS listener. Root, the `mitmwall` proxy user, and the
+`systemd-resolve` user are excluded so administration, proxy upstream lookups,
+and system resolver recursion do not loop back into the proxy.
+
+By default, the mitmproxy addon applies the same rule files in
+`/etc/mitmwall/rules.d` to DNS queries before forwarding them upstream. DNS
+policy is hostname-only: `domain`, `domain_regex`, and `include_subdomains`
+decide whether a query may be resolved, while HTTP-specific filters such as
+`methods`, `pathname_pattern`, `pathname_regex`, and `inject_headers` still
+apply only to web requests. Queries for names that do not match any allow rule
+are answered with DNS `REFUSED` and are not resolved upstream.
+
+Set `block_dns = false` in `/etc/mitmwall/config.toml` to disable addon-level DNS
+filtering and pass through all DNS queries. This does not change the firewall
+redirection rules.
+
 ## How secure is this?
 
 Well, first of, AI agents helped creating this. So there is that 😅
@@ -280,6 +311,19 @@ proxy. So if the attacker can do privilege escalation:
 
   - to the `mitmwall` user they can access the network
   - to root they can access the network and can just stop the service
+
+### DNS-based exfiltration
+
+DNS filtering closes the obvious DNS-based exfiltration path where a process
+encodes data into lookup names, for example `secret-token.attacker.example`, and
+relies on the normal DNS resolution path to reveal that full query to an
+attacker-controlled authoritative nameserver. Because mitmwall refuses names
+outside the configured allowlist before resolving them, those synthetic
+exfiltration domains are never sent upstream.
+
+Allowed domains should still be chosen carefully: if an attacker can control a
+subdomain under an allowed rule, or if a broad `domain_regex` allows untrusted
+names, DNS can still be used as a data channel within that allowed namespace.
 
 ### Allowlisted-domain exfiltration
 
@@ -301,32 +345,6 @@ Pathname filters reduce accidental exfiltration risk, but they do not make an
 allowed domain safe: secrets may still be leaked through URLs, query strings,
 headers, or any endpoint where an allowed method causes data to leave the host.
 
-### DNS leaks
-
-DNS from applications is restricted to local resolvers. The firewall permits
-TCP/UDP port 53 only when the destination is local, such as the system resolver
-(`systemd-resolved` on `127.0.0.53`). The `systemd-resolve` user is allowed to
-make upstream connections so `systemd-resolved` can resolve names; other users
-cannot send traffic directly to remote DNS servers on port 53.
-
-This does not prevent DNS-name-based exfiltration. A malicious process can still
-ask the local resolver to look up names that contain encoded data, such as
-`secret-token.attacker-controlled-domain.example`. If the attacker controls that
-domain's authoritative DNS server, the normal DNS resolution path can reveal the
-queried name to them. This channel is limited and noisy, but it can still be
-enough to leak small secrets such as API keys or tokens.
-
-Closing this channel would require a DNS proxy/filter similar in spirit to the
-HTTP/HTTPS proxy. Applications would only be allowed to query the local DNS
-proxy, and only that proxy user would be allowed to make upstream DNS queries.
-The proxy would need to apply policy before forwarding a name upstream, for
-example by allowing only domains that match the same allowlist used for web
-traffic and rejecting suspicious names such as long, high-entropy, or constantly
-changing subdomains.
-
-UPDATE: mitmproxy actually has
-[dns-support](https://docs.mitmproxy.org/stable/addons/examples/#dns-simple).
-Need to look into it.
 
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm

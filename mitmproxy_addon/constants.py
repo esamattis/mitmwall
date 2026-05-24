@@ -8,6 +8,7 @@ from pathlib import Path
 RULES_DIR = Path("/etc/mitmwall/rules.d")
 ADDON_CONFIG_FILE = Path("/etc/mitmwall/config.toml")
 DEFAULT_LOG_LEVEL_NAME = "info"
+DEFAULT_BLOCK_DNS = True
 LOG_LEVELS = {
     "debug": logging.DEBUG,
     "info": logging.INFO,

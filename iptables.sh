@@ -30,6 +30,7 @@ fi
 
 user=mitmwall
 proxy_port=58080
+dns_port=58053
 web_port=58081
 chain=MITMWALL_OUTPUT
 
@@ -39,11 +40,11 @@ chain=MITMWALL_OUTPUT
 # - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
 # - Allow root and the proxy user to make outbound upstream connections.
+# - Redirect outbound DNS from non-proxy users to the local DNS proxy.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
 # - Allow all loopback traffic so localhost services remain reachable.
-# - Allow other users to connect only to the local proxy and web UI ports on this host.
-# - Allow DNS only to local resolvers so clients can resolve hostnames.
-# - Drop all other new outbound traffic so applications cannot bypass the proxy.
+# - Allow other users to connect only to the local proxy, DNS proxy, and web UI ports on this host.
+# - Drop all other new outbound traffic so applications cannot bypass the proxies.
 
 enable_forwarding() {
     # Enable IPv4 and IPv6 forwarding so the kernel will route packets that are
@@ -98,11 +99,35 @@ remove_redirect_rule() {
 
 }
 
+# Capture DNS attempts from ordinary users, including queries aimed at local
+# resolvers such as 127.0.0.53, and send them to mitmproxy's DNS mode listener.
+# Exclude root, mitmproxy, and systemd-resolved so administration, DNS proxy
+# upstream resolution, and resolver recursion do not loop back into the proxy.
+add_dns_redirect_rule() {
+    table_cmd=$1
+    protocol=$2
+
+    if ! "$table_cmd" -t nat -C OUTPUT -p "$protocol" -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -m owner ! --uid-owner systemd-resolve --dport 53 -j REDIRECT --to-port "$dns_port" >/dev/null 2>&1; then
+        "$table_cmd" -t nat -A OUTPUT -p "$protocol" -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -m owner ! --uid-owner systemd-resolve --dport 53 -j REDIRECT --to-port "$dns_port"
+    fi
+}
+
+# Remove the DNS redirects installed by the "add" action.
+remove_dns_redirect_rule() {
+    table_cmd=$1
+    protocol=$2
+
+    while "$table_cmd" -t nat -C OUTPUT -p "$protocol" -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -m owner ! --uid-owner systemd-resolve --dport 53 -j REDIRECT --to-port "$dns_port" >/dev/null 2>&1; do
+        "$table_cmd" -t nat -D OUTPUT -p "$protocol" -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -m owner ! --uid-owner systemd-resolve --dport 53 -j REDIRECT --to-port "$dns_port"
+    done
+}
+
 # Enforce the outbound allowlist. Established/related packets are allowed so
 # replies from inbound connections (for example SSH) are not broken. The proxy
 # user and root are allowed to reach the network, loopback traffic is allowed so
-# localhost services remain reachable, clients are allowed to reach the local proxy and web
-# UI on this host and DNS, and every other new outbound connection is blocked.
+# localhost services remain reachable, clients are allowed to reach the local
+# HTTP proxy, DNS proxy, and web UI on this host, and every other new outbound
+# connection is blocked.
 add_output_filter() {
     table_cmd=$1
 
@@ -130,8 +155,8 @@ add_output_filter() {
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner "$user" -j ACCEPT
 
     # systemd-resolved runs as systemd-resolve on Ubuntu. Let only that resolver
-    # process make upstream DNS queries; regular applications are limited below
-    # to talking to local resolver addresses only.
+    # process make upstream DNS queries; regular applications are redirected to
+    # mitmproxy's local DNS listener before this filter runs.
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner systemd-resolve -j ACCEPT
 
     # Permit connections to services on this machine. This keeps localhost and
@@ -144,20 +169,15 @@ add_output_filter() {
     # remote hosts that happen to use the same TCP port.
     "$table_cmd" -t filter -A "$chain" -p tcp --dport "$proxy_port" -m addrtype --dst-type LOCAL -j ACCEPT
 
+    # Permit DNS queries to mitmproxy's DNS mode listener. Direct queries to
+    # remote DNS servers are redirected here by NAT before this filter runs.
+    "$table_cmd" -t filter -A "$chain" -p udp --dport "$dns_port" -m addrtype --dst-type LOCAL -j ACCEPT
+    "$table_cmd" -t filter -A "$chain" -p tcp --dport "$dns_port" -m addrtype --dst-type LOCAL -j ACCEPT
+
     # Permit access to the mitmweb UI only on this machine. As above, requiring a
     # LOCAL destination avoids allowing arbitrary outbound connections to remote
     # services listening on the web UI port number.
     "$table_cmd" -t filter -A "$chain" -p tcp --dport "$web_port" -m addrtype --dst-type LOCAL -j ACCEPT
-
-    # Allow applications to ask the local resolver for names over UDP, which is
-    # the normal DNS transport. Remote DNS servers remain blocked for ordinary
-    # users so DNS traffic cannot bypass the local resolver policy.
-    "$table_cmd" -t filter -A "$chain" -p udp --dport 53 -m addrtype --dst-type LOCAL -j ACCEPT
-
-    # Also allow DNS-over-TCP to the local resolver for large responses, retries,
-    # and standards-compliant fallback. This is still restricted to LOCAL
-    # destinations and therefore does not permit direct remote DNS access.
-    "$table_cmd" -t filter -A "$chain" -p tcp --dport 53 -m addrtype --dst-type LOCAL -j ACCEPT
 
     # Fail closed: anything not explicitly allowed above is a new outbound
     # connection attempt that would bypass the transparent proxy, so drop it.
@@ -173,8 +193,8 @@ add_output_filter() {
 # Remove the outbound allowlist/blocklist chain installed by the "add" action.
 # That chain allows established/related packets so inbound services such as SSH
 # keep working, allows root and the proxy user to reach upstream hosts, allows
-# loopback traffic, allows other users to connect to the local proxy and web UI ports on
-# this host and DNS, and blocks all other new outbound traffic.
+# loopback traffic, allows other users to connect to the local HTTP proxy, DNS
+# proxy, and web UI ports on this host, and blocks all other new outbound traffic.
 remove_output_filter() {
     table_cmd=$1
 
@@ -195,6 +215,10 @@ add_rules() {
     add_redirect_rule iptables 443
     add_redirect_rule ip6tables 80
     add_redirect_rule ip6tables 443
+    add_dns_redirect_rule iptables udp
+    add_dns_redirect_rule iptables tcp
+    add_dns_redirect_rule ip6tables udp
+    add_dns_redirect_rule ip6tables tcp
 
     add_output_filter iptables
     add_output_filter ip6tables
@@ -205,6 +229,10 @@ clear_rules() {
     remove_redirect_rule iptables 443
     remove_redirect_rule ip6tables 80
     remove_redirect_rule ip6tables 443
+    remove_dns_redirect_rule iptables udp
+    remove_dns_redirect_rule iptables tcp
+    remove_dns_redirect_rule ip6tables udp
+    remove_dns_redirect_rule ip6tables tcp
 
     remove_output_filter iptables
     remove_output_filter ip6tables

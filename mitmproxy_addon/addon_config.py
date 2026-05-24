@@ -8,7 +8,12 @@ from typing import TypeGuard
 
 import tomllib
 
-from .constants import ADDON_CONFIG_FILE, DEFAULT_LOG_LEVEL_NAME, LOG_LEVELS
+from .constants import (
+    ADDON_CONFIG_FILE,
+    DEFAULT_BLOCK_DNS,
+    DEFAULT_LOG_LEVEL_NAME,
+    LOG_LEVELS,
+)
 
 
 @dataclass(frozen=True)
@@ -19,6 +24,7 @@ class AddonConfig:
 
     log_level_name: str
     log_level: int
+    block_dns: bool
 
 
 def default_addon_config() -> AddonConfig:
@@ -29,6 +35,7 @@ def default_addon_config() -> AddonConfig:
     return AddonConfig(
         log_level_name=DEFAULT_LOG_LEVEL_NAME,
         log_level=LOG_LEVELS[DEFAULT_LOG_LEVEL_NAME],
+        block_dns=DEFAULT_BLOCK_DNS,
     )
 
 
@@ -48,6 +55,17 @@ def parse_log_level(value: object) -> tuple[str, int]:
     return normalized, LOG_LEVELS[normalized]
 
 
+def parse_block_dns(value: object) -> bool:
+    """
+    Parse and validate whether DNS queries should be filtered by rules.
+    """
+
+    if not isinstance(value, bool):
+        raise ValueError("'block_dns' must be a boolean")
+
+    return value
+
+
 def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
     """
     Return whether a TOML value is a table.
@@ -64,7 +82,7 @@ def parse_addon_config(config_value: object) -> AddonConfig:
     if not is_toml_table(config_value):
         raise ValueError("top-level TOML value must be a table")
 
-    extra_top_level_keys = set(config_value) - {"log_level"}
+    extra_top_level_keys = set(config_value) - {"block_dns", "log_level"}
     if extra_top_level_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_top_level_keys))
         raise ValueError(f"unsupported top-level key(s): {keys}")
@@ -72,7 +90,12 @@ def parse_addon_config(config_value: object) -> AddonConfig:
     log_level_name, log_level = parse_log_level(
         config_value.get("log_level", DEFAULT_LOG_LEVEL_NAME)
     )
-    return AddonConfig(log_level_name=log_level_name, log_level=log_level)
+    block_dns = parse_block_dns(config_value.get("block_dns", DEFAULT_BLOCK_DNS))
+    return AddonConfig(
+        log_level_name=log_level_name,
+        log_level=log_level,
+        block_dns=block_dns,
+    )
 
 
 def load_addon_config(path: Path = ADDON_CONFIG_FILE) -> AddonConfig:

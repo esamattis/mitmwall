@@ -73,6 +73,17 @@ class DomainRule:
     pathname_filter: PathnameFilter | None = None
     inject_headers: tuple[InjectedHeader, ...] = ()
 
+    def matches_host(self, host: str) -> bool:
+        """
+        Return whether this rule allows the given hostname before HTTP filters.
+        """
+
+        host = normalize_host(host)
+        domain = normalize_host(self.domain)
+        return host == domain or (
+            self.include_subdomains and host.endswith(f".{domain}")
+        )
+
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
         """
         Return whether this rule allows the given host, method, and pathname.
@@ -81,13 +92,7 @@ class DomainRule:
         if not method_matches(self.methods, method):
             return False
 
-        host = normalize_host(host)
-        domain = normalize_host(self.domain)
-
-        host_matches = host == domain or (
-            self.include_subdomains and host.endswith(f".{domain}")
-        )
-        if not host_matches:
+        if not self.matches_host(host):
             return False
 
         return self.pathname_filter is None or self.pathname_filter.matches(pathname)
@@ -105,6 +110,13 @@ class RegexRule:
     pathname_filter: PathnameFilter | None = None
     inject_headers: tuple[InjectedHeader, ...] = ()
 
+    def matches_host(self, host: str) -> bool:
+        """
+        Return whether this regex rule allows the given hostname before HTTP filters.
+        """
+
+        return self.pattern.search(normalize_host(host)) is not None
+
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
         """
         Return whether this regex rule allows the given host, method, and pathname.
@@ -113,7 +125,7 @@ class RegexRule:
         if not method_matches(self.methods, method):
             return False
 
-        if self.pattern.search(normalize_host(host)) is None:
+        if not self.matches_host(host):
             return False
 
         return self.pathname_filter is None or self.pathname_filter.matches(pathname)

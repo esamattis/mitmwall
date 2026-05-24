@@ -122,6 +122,11 @@ if [ ! -f "$addon_config_file" ]; then
 # Available log_level values: "debug", "info", "warning", "error", "critical".
 # The default is "info".
 log_level = "info"
+
+# When true, DNS queries must match allow rules. Set to false to let the addon
+# pass through all DNS queries while keeping the firewall redirection rules.
+# The default is true.
+block_dns = true
 EOF
 fi
 chown root:"$user_group" "$addon_config_file"
@@ -153,8 +158,8 @@ chmod 0700 "$mitmproxy_confdir"
 chmod 0600 "$mitmweb_config_file"
 
 # Install the helper scripts used by systemd. iptables.sh is run as privileged
-# ExecStartPre/ExecStopPost hooks, while start.sh launches mitmweb as the
-# unprivileged mitmwall user.
+# ExecStartPre/ExecStopPost hooks, while start.sh launches mitmweb in transparent
+# HTTP(S) mode and DNS mode as the unprivileged mitmwall user.
 info "installing service helper scripts into $optdir"
 install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$optdir/"
 
@@ -182,7 +187,7 @@ install -o root -g "$user_group" -m 0640 "$scriptdir/example-rules.toml" "$rules
 info "writing systemd unit to $servicefile"
 cat >"$servicefile" <<EOF
 [Unit]
-Description=mitmwall transparent mitmproxy service
+Description=mitmwall transparent HTTP(S) and DNS mitmproxy service
 After=network-online.target
 Wants=network-online.target
 

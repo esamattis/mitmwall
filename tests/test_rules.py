@@ -2,17 +2,27 @@
 Unit tests for allow-rule parsing and request header injections.
 """
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
 from typing import final, override
 
-from mitmproxy_addon.addon import FlowLike, HeadersLike, Mitmwall, RequestLike
+from mitmproxy_addon.addon import (
+    DNSFlowLike,
+    DNSQuestionLike,
+    DNSRequestLike,
+    FlowLike,
+    HeadersLike,
+    Mitmwall,
+    RequestLike,
+)
 from mitmproxy_addon.pathname_pattern import compile_pathname_pattern
 from mitmproxy_addon.rules import (
     DomainRule,
     InjectedHeader,
     PathnameFilter,
+    RegexRule,
     describe_rule,
     load_rules,
     parse_rules_file,
@@ -99,6 +109,64 @@ class FakeFlow(FlowLike):
         """
 
         self.killed = True
+
+
+@final
+class FakeDNSQuestion(DNSQuestionLike):
+    """
+    Minimal DNS question object for addon unit tests.
+    """
+
+    name: str
+
+    def __init__(self, name: str) -> None:
+        """
+        Initialize a fake DNS question with a hostname.
+        """
+
+        self.name = name
+
+
+@final
+class FakeDNSRequest(DNSRequestLike):
+    """
+    Minimal DNS request object for addon unit tests.
+    """
+
+    question: DNSQuestionLike | None
+
+    def __init__(self, name: str | None) -> None:
+        """
+        Initialize a fake DNS request with an optional question.
+        """
+
+        self.question = None if name is None else FakeDNSQuestion(name)
+
+    @override
+    def fail(self, response_code: int) -> object:
+        """
+        Return a fake DNS error response marker.
+        """
+
+        return ("failed", response_code)
+
+
+@final
+class FakeDNSFlow(DNSFlowLike):
+    """
+    Minimal DNS flow object for addon unit tests.
+    """
+
+    request: DNSRequestLike
+    response: object | None
+
+    def __init__(self, name: str | None) -> None:
+        """
+        Initialize a fake DNS flow without a response.
+        """
+
+        self.request = FakeDNSRequest(name)
+        self.response = None
 
 
 class RuleParsingTests(unittest.TestCase):
@@ -249,6 +317,133 @@ inject_headers = [
         if not isinstance(rule, DomainRule):
             raise AssertionError(f"expected DomainRule, got {type(rule)!r}")
         return rule
+
+
+class DNSAddonTests(unittest.TestCase):
+    """
+    Verify addon behavior for DNS allowlist enforcement.
+    """
+
+    def test_dns_request_allows_pathname_and_method_restricted_rule_domain(
+        self,
+    ) -> None:
+        """
+        Allow DNS for a matching domain even when HTTP filters would not match.
+        """
+
+        addon = Mitmwall()
+        addon.rules = [
+            DomainRule(
+                name="domain pie.dev, pathname_pattern '/headers'",
+                domain="pie.dev",
+                include_subdomains=False,
+                methods=("POST",),
+                pathname_filter=PathnameFilter(
+                    name="pathname_pattern '/headers'",
+                    pattern=compile_pathname_pattern("/headers"),
+                    uses_search=False,
+                    kind="pathname_pattern",
+                    source="/headers",
+                ),
+            )
+        ]
+        flow = FakeDNSFlow("pie.dev")
+
+        addon.dns_request(flow)
+
+        self.assertIsNone(flow.response)
+
+    def test_dns_request_allows_matching_domain_regex(self) -> None:
+        """
+        Allow DNS for a hostname matching a domain_regex rule.
+        """
+
+        addon = Mitmwall()
+        addon.rules = [
+            RegexRule(
+                name="domain_regex '^api[.]example[.]com$'",
+                pattern=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                methods=("GET",),
+            )
+        ]
+        flow = FakeDNSFlow("api.example.com")
+
+        addon.dns_request(flow)
+
+        self.assertIsNone(flow.response)
+
+    def test_dns_request_refuses_unmatched_domain_regex(self) -> None:
+        """
+        Refuse DNS for a hostname that does not match a domain_regex rule.
+        """
+
+        addon = Mitmwall()
+        addon.rules = [
+            RegexRule(
+                name="domain_regex '^api[.]example[.]com$'",
+                pattern=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                methods=("GET",),
+            )
+        ]
+        flow = FakeDNSFlow("www.example.com")
+
+        addon.dns_request(flow)
+
+        self.assertEqual(flow.response, ("failed", 5))
+
+    def test_dns_request_refuses_unmatched_domain(self) -> None:
+        """
+        Refuse DNS queries that do not match any rule hostname.
+        """
+
+        addon = Mitmwall()
+        addon.rules = [
+            DomainRule(
+                name="domain pie.dev",
+                domain="pie.dev",
+                include_subdomains=False,
+                methods=("GET",),
+            )
+        ]
+        flow = FakeDNSFlow("blocked.example")
+
+        addon.dns_request(flow)
+
+        self.assertEqual(flow.response, ("failed", 5))
+
+    def test_dns_request_passes_unmatched_domain_when_block_dns_is_false(self) -> None:
+        """
+        Allow unmatched DNS queries through when DNS blocking is disabled.
+        """
+
+        addon = Mitmwall()
+        addon.block_dns = False
+        addon.rules = [
+            DomainRule(
+                name="domain pie.dev",
+                domain="pie.dev",
+                include_subdomains=False,
+                methods=("GET",),
+            )
+        ]
+        flow = FakeDNSFlow("blocked.example")
+
+        addon.dns_request(flow)
+
+        self.assertIsNone(flow.response)
+
+    def test_dns_request_without_question_passes_when_block_dns_is_false(self) -> None:
+        """
+        Allow malformed DNS requests through when DNS blocking is disabled.
+        """
+
+        addon = Mitmwall()
+        addon.block_dns = False
+        flow = FakeDNSFlow(None)
+
+        addon.dns_request(flow)
+
+        self.assertIsNone(flow.response)
 
 
 class HeaderInjectionAddonTests(unittest.TestCase):

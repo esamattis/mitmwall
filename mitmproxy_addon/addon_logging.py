@@ -4,7 +4,7 @@ Logging setup for the mitmwall addon.
 
 import logging
 
-from .addon_config import default_addon_config, load_addon_config
+from .addon_config import AddonConfig, default_addon_config, load_addon_config
 from .constants import ADDON_CONFIG_FILE
 
 LOGGER = logging.getLogger("mitmwall")
@@ -22,9 +22,11 @@ def apply_log_level(log_level: int) -> None:
         handler.setLevel(log_level)
 
 
-def setup_logging() -> None:
+def setup_logging() -> AddonConfig:
     """
     Send addon logs to stderr so systemd journal captures them.
+
+    Return the loaded addon configuration, or defaults if it cannot be loaded.
     """
 
     if not LOGGER.handlers:
@@ -43,6 +45,7 @@ def setup_logging() -> None:
             + f"using log_level={default_config.log_level_name}"
         )
         LOGGER.error(message)
-        return
+        return default_config
 
     apply_log_level(addon_config.log_level)
+    return addon_config

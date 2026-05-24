@@ -174,16 +174,30 @@ class MitmwallNetworkTests(unittest.TestCase):
                 self._tcp_is_reachable(host, port), f"{name} should have been blocked"
             )
 
-    def assert_dns_query_blocked(self, name: str, server: str, hostname: str) -> None:
+    def assert_dns_query_allowed(self, name: str, server: str, hostname: str) -> None:
         """
-        Assert that a direct UDP DNS query does not receive an answer.
+        Assert that a UDP DNS query receives a successful response.
         """
 
         with self.subTest(name=name, server=server, hostname=hostname):
-            print(f"Testing DNS blocked: {name} ({hostname} via {server})")
-            self.assertFalse(
-                self._dns_udp_query_is_answered(server, hostname),
-                f"{name} should have been blocked but returned a DNS response",
+            print(f"Testing DNS allowed: {name} ({hostname} via {server})")
+            self.assertEqual(
+                self._dns_udp_query_rcode(server, hostname),
+                0,
+                f"{name} should have returned a successful DNS response",
+            )
+
+    def assert_dns_query_refused(self, name: str, server: str, hostname: str) -> None:
+        """
+        Assert that a UDP DNS query is refused by the DNS proxy.
+        """
+
+        with self.subTest(name=name, server=server, hostname=hostname):
+            print(f"Testing DNS refused: {name} ({hostname} via {server})")
+            self.assertEqual(
+                self._dns_udp_query_rcode(server, hostname),
+                5,
+                f"{name} should have returned DNS REFUSED",
             )
 
     def test_exact_domain_rule_is_allowed(self) -> None:
@@ -344,18 +358,25 @@ class MitmwallNetworkTests(unittest.TestCase):
 
         self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
 
-    def test_direct_dns_queries_to_public_resolver_are_blocked(self) -> None:
+    def test_direct_dns_queries_to_public_resolver_are_proxied(self) -> None:
         """
-        Verify that direct DNS queries to public resolvers are blocked.
+        Verify that direct DNS queries are transparently filtered by mitmproxy.
         """
 
-        self.assert_dns_query_blocked(
-            "direct DNS-over-UDP query to public resolver",
+        self.assert_dns_query_allowed(
+            "allowed direct DNS-over-UDP query to public resolver",
             PUBLIC_DNS_SERVER,
             "github.com",
         )
-        self.assert_tcp_blocked(
-            "direct DNS-over-TCP connection to public resolver", PUBLIC_DNS_SERVER, 53
+        self.assert_dns_query_allowed(
+            "allowed direct DNS-over-UDP query matching domain_regex",
+            PUBLIC_DNS_SERVER,
+            "ipinfo.io",
+        )
+        self.assert_dns_query_refused(
+            "blocked direct DNS-over-UDP query to public resolver",
+            PUBLIC_DNS_SERVER,
+            "not-allowed.mitmwall.invalid",
         )
 
     def test_tcp_connections_to_localhost_are_allowed(self) -> None:
@@ -497,21 +518,22 @@ class MitmwallNetworkTests(unittest.TestCase):
 
         return host, port, stop_server
 
-    def _dns_udp_query_is_answered(self, server: str, hostname: str) -> bool:
+    def _dns_udp_query_rcode(self, server: str, hostname: str) -> int | None:
         """
-        Return whether a UDP DNS query receives a matching response.
+        Return the DNS response code for a UDP query, or None on no response.
         """
 
         query = self._build_dns_query(hostname)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(DNS_QUERY_TIMEOUT_SECONDS)
-                sock.connect((server, 53))
-                sock.sendall(query)
+                _sent = sock.sendto(query, (server, 53))
                 response = sock.recv(512)
-                return len(response) >= 2 and response[:2] == query[:2]
+                if len(response) < 4 or response[:2] != query[:2]:
+                    return None
+                return response[3] & 0x0F
         except OSError:
-            return False
+            return None
 
     def _build_dns_query(self, hostname: str) -> bytes:
         """

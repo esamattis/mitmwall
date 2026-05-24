@@ -4,8 +4,9 @@ mitmproxy addon runtime for mitmwall allowlist enforcement.
 
 from typing import Protocol
 
+from .addon_config import AddonConfig
 from .addon_logging import LOGGER, setup_logging
-from .constants import RULES_DIR
+from .constants import DEFAULT_BLOCK_DNS, RULES_DIR
 from .rules import (
     MatchResult,
     Rule,
@@ -15,6 +16,8 @@ from .rules import (
     normalize_method,
     request_pathname,
 )
+
+DNS_RESPONSE_CODE_REFUSED = 5
 
 
 class HeadersLike(Protocol):
@@ -51,7 +54,7 @@ class RequestLike(Protocol):
 
 class FlowLike(Protocol):
     """
-    Subset of mitmproxy flow behavior used by the addon.
+    Subset of mitmproxy HTTP flow behavior used by the addon.
     """
 
     request: RequestLike
@@ -62,6 +65,38 @@ class FlowLike(Protocol):
         """
 
         ...
+
+
+class DNSQuestionLike(Protocol):
+    """
+    Subset of mitmproxy DNS question attributes used by the addon.
+    """
+
+    name: str
+
+
+class DNSRequestLike(Protocol):
+    """
+    Subset of mitmproxy DNS request behavior used by the addon.
+    """
+
+    question: DNSQuestionLike | None
+
+    def fail(self, response_code: int) -> object:
+        """
+        Build a DNS error response for the request.
+        """
+
+        ...
+
+
+class DNSFlowLike(Protocol):
+    """
+    Subset of mitmproxy DNS flow behavior used by the addon.
+    """
+
+    request: DNSRequestLike
+    response: object | None
 
 
 class Mitmwall:
@@ -76,13 +111,15 @@ class Mitmwall:
 
         self.rules: list[Rule] = []
         self.rule_descriptions: tuple[str, ...] = ()
+        self.block_dns: bool = DEFAULT_BLOCK_DNS
 
     def load(self, _loader: object) -> None:
         """
         Configure logging and load the current rules during addon startup.
         """
 
-        setup_logging()
+        addon_config = setup_logging()
+        self.apply_addon_config(addon_config)
         LOGGER.info("addon loaded")
         self.reload_rules()
 
@@ -99,6 +136,16 @@ class Mitmwall:
         """
 
         self.reload_rules()
+
+    def apply_addon_config(self, addon_config: AddonConfig) -> None:
+        """
+        Apply loaded runtime addon settings.
+        """
+
+        previous_block_dns = self.block_dns
+        self.block_dns = addon_config.block_dns
+        if self.block_dns != previous_block_dns:
+            LOGGER.info(f"DNS filtering {'enabled' if self.block_dns else 'disabled'}")
 
     def reload_rules(self) -> None:
         """
@@ -160,6 +207,42 @@ class Mitmwall:
         LOGGER.warning(
             f"blocked host={host} method={method} url={url}; no allow rule matched"
         )
+
+    def dns_request(self, flow: DNSFlowLike) -> None:
+        """
+        Forward DNS queries for allowed domains and refuse all other names.
+        """
+
+        if not self.block_dns:
+            LOGGER.debug("allowed DNS request because block_dns is disabled")
+            return
+
+        question = flow.request.question
+        if question is None:
+            flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
+            LOGGER.warning("blocked DNS request without a question")
+            return
+
+        host = question.name
+        LOGGER.debug(f"dns request host={host}")
+        result = self.is_dns_allowed(host)
+        if result.allowed:
+            LOGGER.debug(f"allowed DNS host={host} rule={result.rule_name}")
+            return
+
+        flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
+        LOGGER.warning(f"blocked DNS host={host}; no allow rule matched")
+
+    def is_dns_allowed(self, host: str) -> MatchResult:
+        """
+        Return whether any loaded rule allows DNS resolution for the hostname.
+        """
+
+        normalized_host = normalize_host(host)
+        for rule in self.rules:
+            if rule.matches_host(normalized_host):
+                return MatchResult(allowed=True, rule_name=rule.name)
+        return MatchResult(allowed=False)
 
     def is_allowed(
         self, host: str, method: str = "GET", pathname: str = "/"
