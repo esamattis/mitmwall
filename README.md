@@ -106,8 +106,10 @@ include_subdomains = true         # Also match *.example.com (default: false).
 methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
                                   # Use methods = "ANY" to allow all methods.
 
-pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
-pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
+pathname_pattern = "/api/:ver/upload"  # URL pathname filter (optional).
+                                           # Matches only the path, not ?query or #fragment.
+pathname_regex = '^/files/.*$'             # Python regex pathname filter (optional).
+                                           # Also matched only against the path.
 
 # Add or replace upstream request headers.
 inject_headers = [
@@ -133,6 +135,9 @@ methods = "ANY"
 - `domain_regex` is matched case-insensitively (partial match).
 - `pathname_regex` need only match part of the pathname (partial match).
 - `pathname_pattern` must match the entire pathname (full match) and supports:
+  - matching is done against the URL pathname only
+  - query strings (`?foo=bar`) and fragments (`#section`) are ignored
+  - for example, `/search?q=test` is matched as pathname `/search`
   - `:param` — matches exactly one path segment (no `/`).
   - `*wildcard` — matches one or more characters (spans `/`).
   - `{optional}` — optional group of tokens.
@@ -181,6 +186,13 @@ inject_headers = [
   "Authorization: Secret",
   "X-Mitmwall-Test: enabled",
 ]
+
+# Query strings are not part of pathname_pattern matching.
+# This allows GET https://pie.dev/headers?x=1 because the pathname is /headers.
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = "/headers"
+methods = ["GET"]
 
 # Allow `git fetch` for repositories owned by `esamattis`.
 # The :repo parameter matches exactly one pathname segment.
