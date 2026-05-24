@@ -10,8 +10,8 @@
 # methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
 #                                   # Use methods = "ANY" to allow all methods.
 # inject_headers = [                     # Add or replace upstream request headers.
-#   "Authorization: Secret",
-#   "X-Trace-Id: example",
+#   { name = "Authorization", value = "Secret" },
+#   { name = "X-Trace-Id", value = "example" },
 # ]
 # pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
 # pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
@@ -25,7 +25,8 @@
 # * Each [[allow]] must have exactly one of `domain` or `domain_regex`.
 # * `include_subdomains` is only valid with `domain`.
 # * At most one of `pathname_pattern` or `pathname_regex` per rule.
-# * `inject_headers` must be a non-empty list of "Header-Name: value" strings.
+# * `inject_headers` must be a non-empty list of
+#   { name = "Header-Name", value = "..." } tables.
 #   Matching rules add or replace those request headers before the upstream request.
 #   If multiple rules match, headers come from the first matching rule that
 #   defines `inject_headers`; they are not merged across matching rules.
@@ -56,7 +57,7 @@ domain = "api.github.com"
 # domain = "api.github.com"
 # pathname_pattern = "/graphql"
 # methods = ["POST"]
-# inject_headers = ["Authorization: token github_pat_... "]
+# inject_headers = [{ name = "Authorization", value = "token github_pat_... " }]
 
 
 # Allow `git fetch` for `esamattis`
@@ -97,8 +98,8 @@ domain = "pie.dev"
 pathname_pattern = "/headers"
 methods = ["GET"]
 inject_headers = [
-    "Authorization: Secret",
-    "X-Mitmwall-Test: enabled",
+    { name = "Authorization", value = "Secret" },
+    { name = "X-Mitmwall-Test", value = "enabled" },
 ]
 
 [[allow]]

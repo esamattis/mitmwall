@@ -113,8 +113,8 @@ pathname_regex = '^/files/.*$'             # Python regex pathname filter (optio
 
 # Add or replace upstream request headers.
 inject_headers = [
-  "Authorization: Secret",
-  "X-Trace-Id: example",
+  { name = "Authorization", value = "Secret" },
+  { name = "X-Trace-Id", value = "example" },
 ]
 
 [[allow]]
@@ -127,7 +127,7 @@ methods = "ANY"
 - Each `[[allow]]` must have exactly one of `domain` or `domain_regex`.
 - `include_subdomains` is only valid with `domain`.
 - At most one of `pathname_pattern` or `pathname_regex` per rule.
-- `inject_headers` must be a non-empty list of `Header-Name: value` strings.
+- `inject_headers` must be a non-empty list of `{ name = "Header-Name", value = "..." }` tables.
 - Unknown keys are rejected.
 
 ### Matching behavior
@@ -183,8 +183,8 @@ domain = "pie.dev"
 pathname_pattern = "/headers"
 methods = ["GET"]
 inject_headers = [
-  "Authorization: Secret",
-  "X-Mitmwall-Test: enabled",
+  { name = "Authorization", value = "Secret" },
+  { name = "X-Mitmwall-Test", value = "enabled" },
 ]
 
 # Query strings are not part of pathname_pattern matching.

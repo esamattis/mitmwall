@@ -116,8 +116,8 @@ class RuleParsingTests(unittest.TestCase):
 [[allow]]
 domain = "pie.dev"
 inject_headers = [
-    "Authorization: Secret",
-    "X-Mitmwall-Test: enabled",
+    { name = "Authorization", value = "Secret" },
+    { name = "X-Mitmwall-Test", value = "enabled" },
 ]
 """.strip()
         )
@@ -131,19 +131,17 @@ inject_headers = [
             ),
         )
 
-    def test_parse_rules_file_rejects_inject_headers_item_without_separator(
-        self,
-    ) -> None:
+    def test_parse_rules_file_rejects_string_inject_headers_items(self) -> None:
         """
-        Reject inject_headers items that do not include a colon separator.
+        Reject inject_headers items that are not TOML tables.
         """
 
-        with self.assertRaisesRegex(ValueError, "must use '<name>: <value>' format"):
+        with self.assertRaisesRegex(ValueError, "must be a table"):
             _rule = self._parse_single_rule(
                 """
 [[allow]]
 domain = "pie.dev"
-inject_headers = ["Authorization Secret"]
+inject_headers = ["Authorization: Secret"]
 """.strip()
             )
 
@@ -173,8 +171,8 @@ inject_header = "Authorization: Secret"
 [[allow]]
 domain = "pie.dev"
 inject_headers = [
-    "Authorization: Secret",
-    "X-Mitmwall-Test: enabled",
+    { name = "Authorization", value = "Secret" },
+    { name = "X-Mitmwall-Test", value = "enabled" },
 ]
 """.strip()
         )

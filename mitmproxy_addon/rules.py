@@ -290,22 +290,28 @@ def parse_methods(rule: dict[str, object], index: int) -> tuple[str, ...]:
     return tuple(dict.fromkeys(methods))
 
 
-def parse_injected_header(header: str, error_prefix: str) -> InjectedHeader:
+def parse_injected_header(
+    header: dict[str, object], error_prefix: str
+) -> InjectedHeader:
     """
-    Parse one configured upstream header injection.
+    Parse one configured upstream header injection table.
     """
 
-    if ":" not in header:
-        raise ValueError(f"{error_prefix} must use '<name>: <value>' format")
+    extra_keys = set(header) - {"name", "value"}
+    if extra_keys:
+        keys = ", ".join(sorted(repr(key) for key in extra_keys))
+        raise ValueError(f"{error_prefix} has unsupported key(s): {keys}")
 
-    raw_name, raw_value = header.split(":", 1)
-    name = raw_name.strip()
-    if not name:
-        raise ValueError(f"{error_prefix} header name must not be empty")
+    name_value = header.get("name")
+    if not isinstance(name_value, str) or not name_value.strip():
+        raise ValueError(f"{error_prefix} 'name' must be a non-empty string")
+    name = name_value.strip()
     if HEADER_NAME_PATTERN.fullmatch(name) is None:
         raise ValueError(f"{error_prefix} has invalid header name {name!r}")
 
-    value = raw_value.lstrip(" \t")
+    value = header.get("value")
+    if not isinstance(value, str):
+        raise ValueError(f"{error_prefix} 'value' must be a string")
     if "\r" in value or "\n" in value:
         raise ValueError(f"{error_prefix} value must not contain CR or LF")
 
@@ -329,9 +335,9 @@ def parse_inject_headers(
 
     headers: list[InjectedHeader] = []
     for header_index, header_value in enumerate(value, start=1):
-        if not isinstance(header_value, str) or not header_value.strip():
+        if not is_toml_table(header_value):
             raise ValueError(
-                f"allow rule #{index}: {key!r} item #{header_index} must be a non-empty string"
+                f"allow rule #{index}: {key!r} item #{header_index} must be a table"
             )
         headers.append(
             parse_injected_header(
