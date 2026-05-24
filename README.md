@@ -228,7 +228,8 @@ credentials to untrusted users. A typical workflow is to first configure the
 tools that require the credentials, inspect in mitmweb how the credentials are
 used, write a matching rule that injects the credential headers, and finally
 replace the real credentials with dummy values so the tool still thinks
-credentials are configured.
+credentials are configured. Credential injection also prevents
+malware from using their own credentials.
 
 ## System environment variables
 
