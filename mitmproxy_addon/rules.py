@@ -14,6 +14,18 @@ import tomllib
 from .constants import ALLOW_RULE_KEYS, ANY_METHOD, DEFAULT_ALLOWED_METHODS, RULES_DIR
 from .pathname_pattern import compile_pathname_pattern
 
+HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.\^_`|~0-9A-Za-z]+$")
+
+
+@dataclass(frozen=True)
+class InjectedHeader:
+    """
+    Header name and value to add to an allowed upstream request.
+    """
+
+    name: str
+    value: str
+
 
 @dataclass(frozen=True)
 class MatchResult:
@@ -23,6 +35,7 @@ class MatchResult:
 
     allowed: bool
     rule_name: str | None = None
+    inject_headers: tuple[InjectedHeader, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -58,6 +71,7 @@ class DomainRule:
     include_subdomains: bool
     methods: tuple[str, ...]
     pathname_filter: PathnameFilter | None = None
+    inject_headers: tuple[InjectedHeader, ...] = ()
 
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
         """
@@ -89,6 +103,7 @@ class RegexRule:
     pattern: re.Pattern[str]
     methods: tuple[str, ...]
     pathname_filter: PathnameFilter | None = None
+    inject_headers: tuple[InjectedHeader, ...] = ()
 
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
         """
@@ -275,6 +290,59 @@ def parse_methods(rule: dict[str, object], index: int) -> tuple[str, ...]:
     return tuple(dict.fromkeys(methods))
 
 
+def parse_injected_header(header: str, error_prefix: str) -> InjectedHeader:
+    """
+    Parse one configured upstream header injection.
+    """
+
+    if ":" not in header:
+        raise ValueError(f"{error_prefix} must use '<name>: <value>' format")
+
+    raw_name, raw_value = header.split(":", 1)
+    name = raw_name.strip()
+    if not name:
+        raise ValueError(f"{error_prefix} header name must not be empty")
+    if HEADER_NAME_PATTERN.fullmatch(name) is None:
+        raise ValueError(f"{error_prefix} has invalid header name {name!r}")
+
+    value = raw_value.lstrip(" \t")
+    if "\r" in value or "\n" in value:
+        raise ValueError(f"{error_prefix} value must not contain CR or LF")
+
+    return InjectedHeader(name=name, value=value)
+
+
+def parse_inject_headers(
+    rule: dict[str, object], index: int
+) -> tuple[InjectedHeader, ...]:
+    """
+    Parse optional upstream header injections from an allow rule table.
+    """
+
+    key = "inject_headers"
+    if key not in rule:
+        return ()
+
+    value = rule[key]
+    if not is_toml_array(value) or not value:
+        raise ValueError(f"allow rule #{index}: {key!r} must be a non-empty list")
+
+    headers: list[InjectedHeader] = []
+    for header_index, header_value in enumerate(value, start=1):
+        if not isinstance(header_value, str) or not header_value.strip():
+            raise ValueError(
+                f"allow rule #{index}: {key!r} item #{header_index} must be a non-empty string"
+            )
+        headers.append(
+            parse_injected_header(
+                header_value,
+                f"allow rule #{index}: {key!r} item #{header_index}",
+            )
+        )
+
+    return tuple(headers)
+
+
 def parse_rules_file(path: Path) -> list[Rule]:
     """
     Load and validate allow rules from a single TOML file.
@@ -315,6 +383,7 @@ def parse_rules_file(path: Path) -> list[Rule]:
 
         methods = parse_methods(rule, index)
         pathname_filter = parse_pathname_filter(rule, index)
+        inject_headers = parse_inject_headers(rule, index)
 
         if has_domain:
             validate_allowed_keys(
@@ -322,6 +391,7 @@ def parse_rules_file(path: Path) -> list[Rule]:
                 {
                     "domain",
                     "include_subdomains",
+                    "inject_headers",
                     "methods",
                     "pathname_regex",
                     "pathname_pattern",
@@ -342,12 +412,19 @@ def parse_rules_file(path: Path) -> list[Rule]:
                     include_subdomains=include_subdomains,
                     methods=methods,
                     pathname_filter=pathname_filter,
+                    inject_headers=inject_headers,
                 )
             )
         else:
             validate_allowed_keys(
                 rule,
-                {"domain_regex", "methods", "pathname_regex", "pathname_pattern"},
+                {
+                    "domain_regex",
+                    "inject_headers",
+                    "methods",
+                    "pathname_regex",
+                    "pathname_pattern",
+                },
                 index,
             )
             domain_regex = require_string(rule, "domain_regex", index)
@@ -363,6 +440,7 @@ def parse_rules_file(path: Path) -> list[Rule]:
                     pattern=pattern,
                     methods=methods,
                     pathname_filter=pathname_filter,
+                    inject_headers=inject_headers,
                 )
             )
 
@@ -395,12 +473,16 @@ def describe_rule(index: int, rule: Rule) -> str:
         if pathname_filter.kind == "pathname_pattern":
             parts.append(f"compiled_regex={pathname_filter.pattern.pattern!r}")
 
+    if rule.inject_headers:
+        header_names = [header.name for header in rule.inject_headers]
+        parts.append(f"inject_header_names={header_names!r}")
+
     return " ".join(parts)
 
 
 def load_rules(path: Path = RULES_DIR) -> list[Rule]:
     """
-    Load all TOML allow rules from a directory.
+    Load all TOML allow rules from a directory in alphabetical filename order.
     """
 
     if not path.exists():
@@ -410,7 +492,12 @@ def load_rules(path: Path = RULES_DIR) -> list[Rule]:
 
     parsed_rules: list[Rule] = []
     rule_files = sorted(
-        child for child in path.iterdir() if child.is_file() and child.suffix == ".toml"
+        (
+            child
+            for child in path.iterdir()
+            if child.is_file() and child.suffix == ".toml"
+        ),
+        key=lambda child: child.name,
     )
     for rule_file in rule_files:
         try:

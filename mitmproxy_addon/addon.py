@@ -17,6 +17,26 @@ from .rules import (
 )
 
 
+class HeadersLike(Protocol):
+    """
+    Minimal mutable header mapping exposed by mitmproxy requests.
+    """
+
+    def __setitem__(self, key: str, value: str, /) -> None:
+        """
+        Set or replace a header value.
+        """
+
+        ...
+
+    def __getitem__(self, key: str, /) -> str:
+        """
+        Return a header value.
+        """
+
+        ...
+
+
 class RequestLike(Protocol):
     """
     Subset of mitmproxy request attributes used by the addon.
@@ -26,6 +46,7 @@ class RequestLike(Protocol):
     host: str
     method: str
     pretty_url: str
+    headers: HeadersLike
 
 
 class FlowLike(Protocol):
@@ -120,7 +141,19 @@ class Mitmwall:
 
         result = self.is_allowed(host, method, pathname)
         if result.allowed:
-            LOGGER.debug(f"allowed host={host} method={method} rule={result.rule_name}")
+            if result.inject_headers:
+                for injected_header in result.inject_headers:
+                    flow.request.headers[injected_header.name] = injected_header.value
+                injected_header_names = ",".join(
+                    header.name for header in result.inject_headers
+                )
+                LOGGER.debug(
+                    f"allowed host={host} method={method} rule={result.rule_name} injected_headers={injected_header_names}"
+                )
+            else:
+                LOGGER.debug(
+                    f"allowed host={host} method={method} rule={result.rule_name}"
+                )
             return
 
         flow.kill()
@@ -137,9 +170,26 @@ class Mitmwall:
 
         normalized_host = normalize_host(host)
         normalized_method = normalize_method(method)
+        first_match: Rule | None = None
         for rule in self.rules:
-            if rule.matches(normalized_host, normalized_method, pathname):
-                return MatchResult(allowed=True, rule_name=rule.name)
+            if not rule.matches(normalized_host, normalized_method, pathname):
+                continue
+
+            if first_match is None:
+                first_match = rule
+            if rule.inject_headers:
+                return MatchResult(
+                    allowed=True,
+                    rule_name=rule.name,
+                    inject_headers=rule.inject_headers,
+                )
+
+        if first_match is not None:
+            return MatchResult(
+                allowed=True,
+                rule_name=first_match.name,
+                inject_headers=first_match.inject_headers,
+            )
         return MatchResult(allowed=False)
 
 

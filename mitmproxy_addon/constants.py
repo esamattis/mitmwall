@@ -21,6 +21,7 @@ ALLOW_RULE_KEYS = {
     "domain",
     "domain_regex",
     "include_subdomains",
+    "inject_headers",
     "methods",
     "pathname_regex",
     "pathname_pattern",

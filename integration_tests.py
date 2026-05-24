@@ -3,6 +3,7 @@
 Integration tests for mitmwall network allow/block rules.
 """
 
+import json
 import socket
 import ssl
 import threading
@@ -12,7 +13,8 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypeGuard
+from types import TracebackType
+from typing import Protocol, TypeGuard, cast, override
 
 CONNECT_TIMEOUT_SECONDS = 5
 REQUEST_TIMEOUT_SECONDS = 20
@@ -56,12 +58,60 @@ def is_ipv4_socket_address(address: object) -> TypeGuard[tuple[str, int]]:
             return False
 
 
+def is_string_key_dict(value: object) -> TypeGuard[dict[str, object]]:
+    """
+    Return whether a value is a dictionary with string keys.
+    """
+
+    if not isinstance(value, dict):
+        return False
+
+    dictionary = cast(dict[object, object], value)
+    for key_object in dictionary.keys():
+        if not isinstance(key_object, str):
+            return False
+    return True
+
+
+class ReadableResponse(Protocol):
+    """
+    Minimal response interface needed from urllib responses in tests.
+    """
+
+    def read(self) -> bytes:
+        """
+        Read the full response body as bytes.
+        """
+
+        ...
+
+    def __enter__(self) -> "ReadableResponse":
+        """
+        Enter the response context manager.
+        """
+
+        ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """
+        Exit the response context manager.
+        """
+
+        ...
+
+
 class MitmwallNetworkTests(unittest.TestCase):
     """
     Integration tests for mitmwall firewall and allowlist behavior.
     """
 
     @classmethod
+    @override
     def setUpClass(cls) -> None:
         """
         Wait for the local mitmwall proxy to accept connections.
@@ -73,9 +123,7 @@ class MitmwallNetworkTests(unittest.TestCase):
             SERVICE_READY_TIMEOUT_SECONDS,
         ):
             raise RuntimeError(
-                "mitmwall proxy did not start listening on "
-                f"{PROXY_HOST}:{PROXY_PORT} within "
-                f"{SERVICE_READY_TIMEOUT_SECONDS} seconds"
+                f"mitmwall proxy did not start listening on {PROXY_HOST}:{PROXY_PORT} within {SERVICE_READY_TIMEOUT_SECONDS} seconds"
             )
 
     def assert_url_allowed(self, name: str, url: str, method: str = "GET") -> None:
@@ -157,7 +205,9 @@ class MitmwallNetworkTests(unittest.TestCase):
         Verify that include_subdomains permits matching subdomains.
         """
 
-        self.assert_url_allowed("include_subdomains rule", "https://www.esamatti.fi/")
+        self.assert_url_allowed(
+            "include_subdomains rule", "https://raw.githubusercontent.com/"
+        )
 
     def test_subdomain_without_include_subdomains_is_blocked(self) -> None:
         """
@@ -165,7 +215,7 @@ class MitmwallNetworkTests(unittest.TestCase):
         """
 
         self.assert_url_blocked(
-            "subdomain when include_subdomains=false", "https://api.github.com/"
+            "subdomain when include_subdomains=false", "https://www.esamatti.fi/"
         )
 
     def test_unlisted_domain_is_blocked(self) -> None:
@@ -199,6 +249,16 @@ class MitmwallNetworkTests(unittest.TestCase):
         self.assert_url_allowed(
             "default methods rule allows HEAD", "https://github.com/", method="HEAD"
         )
+
+    def test_inject_headers_rule_adds_configured_headers(self) -> None:
+        """
+        Verify that inject_headers adds the configured request headers.
+        """
+
+        headers = self._url_reported_headers("https://pie.dev/headers")
+
+        self.assertEqual(headers.get("authorization"), "Secret")
+        self.assertEqual(headers.get("x-mitmwall-test"), "enabled")
 
     def test_pathname_pattern_rule_allows_matching_post(self) -> None:
         """
@@ -337,6 +397,42 @@ class MitmwallNetworkTests(unittest.TestCase):
             return True, None
         except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
             return False, exc
+
+    def _url_reported_headers(self, url: str, method: str = "GET") -> dict[str, str]:
+        """
+        Return request headers echoed back by a JSON test endpoint.
+        """
+
+        request = urllib.request.Request(
+            url, headers={"User-Agent": "mitmwall-test/1.0"}, method=method
+        )
+        context = ssl.create_default_context(cafile=SYSTEM_CA_CERTIFICATES)
+        with cast(
+            ReadableResponse,
+            urllib.request.urlopen(
+                request,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                context=context,
+            ),
+        ) as response:
+            response_text = response.read().decode("utf-8")
+
+        payload = cast(object, json.loads(response_text))
+        if not is_string_key_dict(payload):
+            raise AssertionError(f"expected JSON object response, got {payload!r}")
+
+        headers = payload.get("headers")
+        if not is_string_key_dict(headers):
+            raise AssertionError(
+                f"expected JSON object response with headers, got {payload!r}"
+            )
+
+        normalized_headers: dict[str, str] = {}
+        for key, value in headers.items():
+            if isinstance(value, str):
+                normalized_headers[key.lower()] = value
+
+        return normalized_headers
 
     def _tcp_is_reachable(self, host: str, port: int) -> bool:
         """
