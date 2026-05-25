@@ -15,6 +15,10 @@ real time.
 
 The name is a wordplay for mitmproxy + firewall = mitmwall.
 
+
+<img width="1334" height="682" alt="image" src="https://github.com/user-attachments/assets/6627274a-315f-4520-804f-48b82d1b2c76" />
+
+
 ## How?
 
 - systemd `mitmwall.service` starts `mitmweb` in transparent HTTP(S) proxy mode
