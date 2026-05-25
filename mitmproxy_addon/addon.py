@@ -216,7 +216,6 @@ class Mitmwall:
         if not self.block_dns:
             LOGGER.debug("allowed DNS request because block_dns is disabled")
             return
-
         question = flow.request.question
         if question is None:
             flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
