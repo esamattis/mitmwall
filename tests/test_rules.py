@@ -411,6 +411,19 @@ class DNSAddonTests(unittest.TestCase):
 
         self.assertEqual(flow.response, ("failed", 5))
 
+    def test_dns_request_allows_local_hostname(self) -> None:
+        """
+        Allow resolving the local machine hostname without an allow rule.
+        """
+
+        addon = Mitmwall()
+        addon.local_hostname = "localbox"
+        flow = FakeDNSFlow("LOCALBOX.")
+
+        addon.dns_request(flow)
+
+        self.assertIsNone(flow.response)
+
     def test_dns_request_passes_unmatched_domain_when_block_dns_is_false(self) -> None:
         """
         Allow unmatched DNS queries through when DNS blocking is disabled.

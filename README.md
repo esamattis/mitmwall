@@ -299,8 +299,9 @@ By default, the mitmproxy addon applies the same rule files in
 policy is hostname-only: `domain`, `domain_regex`, and `include_subdomains`
 decide whether a query may be resolved, while HTTP-specific filters such as
 `methods`, `pathname_pattern`, `pathname_regex`, and `inject_headers` still
-apply only to web requests. Queries for names that do not match any allow rule
-are answered with DNS `REFUSED` and are not resolved upstream.
+apply only to web requests. Queries for the machine's local hostname are also
+allowed. Other queries that do not match any allow rule are answered with DNS
+`REFUSED` and are not resolved upstream.
 
 Set `block_dns = false` in `/etc/mitmwall/config.toml` to disable addon-level DNS
 filtering and pass through all DNS queries. This does not change the firewall

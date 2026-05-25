@@ -2,6 +2,7 @@
 mitmproxy addon runtime for mitmwall allowlist enforcement.
 """
 
+import socket
 from typing import Protocol
 
 from .addon_config import AddonConfig
@@ -112,6 +113,7 @@ class Mitmwall:
         self.rules: list[Rule] = []
         self.rule_descriptions: tuple[str, ...] = ()
         self.block_dns: bool = DEFAULT_BLOCK_DNS
+        self.local_hostname: str = normalize_host(socket.gethostname())
 
     def load(self, _loader: object) -> None:
         """
@@ -229,6 +231,10 @@ class Mitmwall:
             LOGGER.debug(f"allowed DNS host={host} rule={result.rule_name}")
             return
 
+        if self.is_local_hostname(host):
+            LOGGER.debug(f"allowed DNS host={host} because it is the local hostname")
+            return
+
         flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
         LOGGER.warning(f"blocked DNS host={host}; no allow rule matched")
 
@@ -242,6 +248,13 @@ class Mitmwall:
             if rule.matches_host(normalized_host):
                 return MatchResult(allowed=True, rule_name=rule.name)
         return MatchResult(allowed=False)
+
+    def is_local_hostname(self, host: str) -> bool:
+        """
+        Return whether a DNS query is for the current machine hostname.
+        """
+
+        return bool(self.local_hostname) and normalize_host(host) == self.local_hostname
 
     def is_allowed(
         self, host: str, method: str = "GET", pathname: str = "/"
