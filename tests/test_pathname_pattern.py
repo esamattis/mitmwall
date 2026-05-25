@@ -135,6 +135,28 @@ class PathnamePatternTests(unittest.TestCase):
         self.assertIsNotNone(pattern.fullmatch("/users/me/"))
         self.assertIsNone(pattern.fullmatch("/users/me/extra"))
 
+    def test_compile_matches_path_without_variables(self) -> None:
+        """
+        Match an exact literal pathname pattern that does not define variables.
+        """
+
+        pattern = compile_pathname_pattern("/registry/v1/latest/registry+json")
+
+        self.assertIsNotNone(pattern.fullmatch("/registry/v1/latest/registry+json"))
+        self.assertIsNotNone(pattern.fullmatch("/registry/v1/latest/registry+json/"))
+        self.assertIsNone(pattern.fullmatch("/registry/v1/latest/registry-json"))
+        self.assertIsNone(pattern.fullmatch("/registry/v1/latest/registry+json/extra"))
+
+    def test_compile_rejects_full_url_patterns(self) -> None:
+        """
+        Reject full URLs because pathname patterns match only URL paths.
+        """
+
+        with self.assertRaisesRegex(ValueError, "must be a URL path"):
+            _ = compile_pathname_pattern(
+                "https://github.com/moonrepo/moon/git-upload-pack"
+            )
+
     def test_compile_requires_trailing_slash_when_pattern_ends_with_slash(self) -> None:
         """
         Preserve a required trailing slash when the pattern explicitly ends with one.

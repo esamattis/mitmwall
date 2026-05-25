@@ -4,6 +4,7 @@ URLPattern-style pathname parsing and compilation helpers.
 
 import re
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -221,15 +222,38 @@ def pathname_tokens_to_regex_source(tokens: list[FlatPathnamePatternToken]) -> s
     return source
 
 
+def is_literal_pathname_pattern(pattern: str) -> bool:
+    """
+    Return whether a pathname pattern contains no pattern syntax tokens.
+    """
+
+    return not any(char in pattern for char in ":*{}\\")
+
+
+def is_full_url_pathname_pattern(pattern: str) -> bool:
+    """
+    Return whether a pathname pattern appears to contain a full URL.
+    """
+
+    parsed = urlsplit(pattern)
+    return bool(parsed.scheme and parsed.netloc)
+
+
 def compile_pathname_pattern(pattern: str) -> re.Pattern[str]:
     """
     Compile a URLPattern-style pathname pattern to a case-sensitive regex.
     """
 
-    tokens = parse_pathname_pattern_tokens(pattern)
-    sequences = flatten_pathname_pattern_tokens(tokens)
-    source = "|".join(
-        pathname_tokens_to_regex_source(sequence) for sequence in sequences
-    )
+    if is_full_url_pathname_pattern(pattern):
+        raise ValueError("pathname_pattern must be a URL path, not a full URL")
+
+    if is_literal_pathname_pattern(pattern):
+        source = re.escape(pattern)
+    else:
+        tokens = parse_pathname_pattern_tokens(pattern)
+        sequences = flatten_pathname_pattern_tokens(tokens)
+        source = "|".join(
+            pathname_tokens_to_regex_source(sequence) for sequence in sequences
+        )
     trailing = "" if pattern.endswith("/") else "/?"
     return re.compile(f"(?:{source}){trailing}")
