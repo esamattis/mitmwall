@@ -39,6 +39,8 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
 If `/etc/mitmwall/rules.d` is missing or any rule file is invalid, mitmwall
 fails closed and blocks all proxied HTTP(S) traffic and DNS resolution.
 
+You should also read the [How mitmproxy works](https://docs.mitmproxy.org/stable/concepts/how-mitmproxy-works/) -article.
+
 ## Install
 
 Run on the Ubuntu server as a sudo-capable user:
