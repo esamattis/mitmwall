@@ -14,6 +14,8 @@ Never use any pypi packages. Only use stdlib.
 
 After any changes run `./test.sh` and `./integration_tests.sh`
 
+`example-rules.toml` are installed during integration tests.
+
 See logs with:
 
 sudo journalctl -u mitmwall --no-pager
