@@ -76,6 +76,7 @@ servicefile=/etc/systemd/system/mitmwall.service
 ca_cert_dir=/usr/local/share/ca-certificates/extra
 ca_cert_file=$ca_cert_dir/mitmproxy-ca-cert.crt
 environment_file=/etc/environment
+profile_file=/etc/profile.d/mitmwall.sh
 
 # Resolve the directory containing this installer so files can be copied from
 # the source checkout regardless of the caller's current working directory.
@@ -281,7 +282,7 @@ if [ ! -f "$system_environment_source" ]; then
     die "missing system environment source: $system_environment_source"
 fi
 
-info "updating environment integration in $environment_file"
+info "updating environment integration in $environment_file and $profile_file"
 
 environment_values=$(cat "$system_environment_source")
 
@@ -305,7 +306,26 @@ sed '/^# mitmwall-start$/,/^# mitmwall-end$/d' "$environment_source" >"$tmpdir/e
 printf '%s\n' "$environment_block" >>"$tmpdir/environment"
 install -m 0644 "$tmpdir/environment" "$environment_file"
 
+# Also install a profile script containing the same assignments so operators can
+# source it immediately in their current shell session, as shown after install.
+# Export the variable names before assignment so the sourced values are inherited
+# by child processes.
+cat >"$tmpdir/profile" <<EOF
+# mitmwall-start
+export NODE_EXTRA_CA_CERTS SSL_CERT_FILE REQUESTS_CA_BUNDLE
+$environment_values
+# mitmwall-end
+EOF
+install -m 0644 "$tmpdir/profile" "$profile_file"
 
+# If this install is updating an already-running service, restart it so the new
+# unit file, helper scripts, mitmproxy binaries, addon code, rules, and trust
+# integration take effect. Leave inactive installations stopped so fresh installs
+# do not unexpectedly begin changing network traffic.
+if systemctl is-active --quiet mitmwall; then
+    info "mitmwall already runnning, restarting for the updates to take effect"
+    systemctl restart mitmwall
+fi
 
 # Print next-step commands instead of enabling or starting the service
 # automatically. This keeps installation side effects explicit and lets the
