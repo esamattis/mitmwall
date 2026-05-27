@@ -26,12 +26,14 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
   - redirect outbound TCP port `80` and `443` traffic to the HTTP(S) proxy
   - redirect outbound TCP/UDP port `53` traffic to the DNS proxy
-  - only allow root, the dedicated `mitmwall` user, and `systemd-resolve` to make
-    upstream connections
+  - only allow root, the dedicated `mitmwall` user, `systemd-resolve`, and
+    installed time-sync service users to make required upstream connections
     - the proxy is running as the `mitmwall` user
     - root is left unrestricted for host administration and troubleshooting
     - `systemd-resolve` is left able to perform resolver recursion without
       looping back into the DNS proxy
+    - installed time-sync service users such as `systemd-timesync`, `_chrony`,
+      or `ntp` are left able to perform NTP synchronization on UDP/123
   - drop other new outbound traffic so applications cannot bypass the proxies
 - The mitmproxy addon in `/opt/mitmwall/mitmproxy_addon/main.py` loads TOML files
   from `/etc/mitmwall/rules.d` and:

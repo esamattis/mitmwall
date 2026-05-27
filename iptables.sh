@@ -42,6 +42,7 @@ chain=MITMWALL_OUTPUT
 # - Allow root and the proxy user to make outbound upstream connections.
 # - Redirect outbound DNS from non-proxy users to the local DNS proxy.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
+# - Allow installed system time synchronizers to reach upstream NTP.
 # - Allow all loopback traffic so localhost services remain reachable.
 # - Allow other users to connect only to the local proxy, DNS proxy, and web UI ports on this host.
 # - Drop all other new outbound traffic so applications cannot bypass the proxies.
@@ -122,6 +123,20 @@ remove_dns_redirect_rule() {
     done
 }
 
+# Allow installed Ubuntu time synchronization services to reach upstream NTP.
+# Different Ubuntu configurations use different unprivileged service accounts;
+# missing accounts are skipped so minimal systems without a given NTP client can
+# still install the firewall policy successfully.
+add_ntp_filter_rules() {
+    table_cmd=$1
+
+    for ntp_user in systemd-timesync _chrony ntp; do
+        if ntp_uid=$(id -u "$ntp_user" 2>/dev/null); then
+            "$table_cmd" -t filter -A "$chain" -p udp --dport 123 -m owner --uid-owner "$ntp_uid" -j ACCEPT
+        fi
+    done
+}
+
 # Enforce the outbound allowlist. Established/related packets are allowed so
 # replies from inbound connections (for example SSH) are not broken. The proxy
 # user and root are allowed to reach the network, loopback traffic is allowed so
@@ -158,6 +173,11 @@ add_output_filter() {
     # process make upstream DNS queries; regular applications are redirected to
     # mitmproxy's local DNS listener before this filter runs.
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner systemd-resolve -j ACCEPT
+
+    # Time synchronization clients usually run as unprivileged service users on
+    # Ubuntu. Allow only their outbound NTP traffic so clock updates work without
+    # creating a general network bypass for those users.
+    add_ntp_filter_rules "$table_cmd"
 
     # Permit connections to services on this machine. This keeps localhost and
     # other loopback traffic working while the default policy below still blocks
