@@ -37,10 +37,10 @@ chain=MITMWALL_OUTPUT
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
 # Policy installed by the "add" action:
-# - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
+# - Redirect outbound DNS from non-proxy users to the local DNS proxy.
+# - Redirect all outbound TCP from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
 # - Allow root and the proxy user to make outbound upstream connections.
-# - Redirect outbound DNS from non-proxy users to the local DNS proxy.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
 # - Allow installed system time synchronizers to reach upstream NTP.
 # - Allow all loopback traffic so localhost services remain reachable.
@@ -60,44 +60,44 @@ enable_forwarding() {
     sysctl -w net.ipv4.conf.all.send_redirects=0
 }
 
-# Capture direct outbound HTTP/HTTPS attempts from users other than root and
-# the proxy user, then transparently redirect them to the local proxy.
-add_redirect_rule() {
+# Capture direct outbound TCP attempts from users other than root and the proxy
+# user, then transparently redirect them to the local proxy. DNS traffic (port
+# 53) must be redirected first by add_dns_redirect_rule so it reaches the DNS
+# proxy instead of the TCP proxy.
+add_tcp_redirect_rule() {
     table_cmd=$1
-    dport=$2
 
     # Install the NAT redirect idempotently. `-C` checks whether the exact rule
     # already exists so restarting the systemd service does not append duplicate
     # redirects to the OUTPUT chain.
     #
     # The owner matches exclude root and the dedicated proxy user. mitmproxy
-    # itself runs as `$user` and must be able to open the real upstream HTTP/HTTPS
+    # itself runs as `$user` and must be able to open the real upstream
     # connection; redirecting the proxy's own traffic back into the proxy would
     # create a loop. Root is also allowed to administer the host and troubleshoot
     # networking without being captured by the transparent proxy.
     #
-    # All other local users trying to connect directly to TCP port 80 or 443 are
-    # transparently redirected to `$proxy_port`, where mitmproxy can inspect the
-    # HTTP(S) hostname and enforce TOML rules from `/etc/mitmwall/rules.d`.
+    # All other local users trying to connect directly to any TCP port are
+    # transparently redirected to `$proxy_port`, where mitmproxy can inspect
+    # HTTP(S) hostnames and enforce TOML rules from `/etc/mitmwall/rules.d`.
+    # Non-HTTP TCP traffic is logged and passed through by the addon.
     #
     # Exclude loopback traffic from the redirect so localhost services remain
     # reachable on their real ports instead of being captured by mitmproxy.
-    if ! "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; then
-        "$table_cmd" -t nat -A OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
+    if ! "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; then
+        "$table_cmd" -t nat -A OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -j REDIRECT --to-port "$proxy_port"
     fi
 }
 
-# Remove the transparent HTTP/HTTPS redirects installed by the "add" action.
-# These redirects capture direct outbound web traffic from non-proxy users and
-# send it to the local proxy port.
-remove_redirect_rule() {
+# Remove the transparent TCP redirect installed by the "add" action.
+# This redirect captures all outbound TCP traffic from non-proxy users and
+# sends it to the local proxy port.
+remove_tcp_redirect_rule() {
     table_cmd=$1
-    dport=$2
 
-    while "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; do
-        "$table_cmd" -t nat -D OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" --dport "$dport" -j REDIRECT --to-port "$proxy_port"
+    while "$table_cmd" -t nat -C OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -j REDIRECT --to-port "$proxy_port" >/dev/null 2>&1; do
+        "$table_cmd" -t nat -D OUTPUT -p tcp ! -o lo -m owner ! --uid-owner 0 -m owner ! --uid-owner "$user" -j REDIRECT --to-port "$proxy_port"
     done
-
 }
 
 # Capture DNS attempts from ordinary users, including queries aimed at local
@@ -231,24 +231,22 @@ remove_output_filter() {
 add_rules() {
     enable_forwarding
 
-    add_redirect_rule iptables 80
-    add_redirect_rule iptables 443
-    add_redirect_rule ip6tables 80
-    add_redirect_rule ip6tables 443
+    # DNS redirect must be installed before the catch-all TCP redirect so that
+    # port 53 traffic is matched by the DNS rule first.
     add_dns_redirect_rule iptables udp
     add_dns_redirect_rule iptables tcp
     add_dns_redirect_rule ip6tables udp
     add_dns_redirect_rule ip6tables tcp
+    add_tcp_redirect_rule iptables
+    add_tcp_redirect_rule ip6tables
 
     add_output_filter iptables
     add_output_filter ip6tables
 }
 
 clear_rules() {
-    remove_redirect_rule iptables 80
-    remove_redirect_rule iptables 443
-    remove_redirect_rule ip6tables 80
-    remove_redirect_rule ip6tables 443
+    remove_tcp_redirect_rule iptables
+    remove_tcp_redirect_rule ip6tables
     remove_dns_redirect_rule iptables udp
     remove_dns_redirect_rule iptables tcp
     remove_dns_redirect_rule ip6tables udp

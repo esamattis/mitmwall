@@ -453,12 +453,12 @@ class MitmwallNetworkTests(unittest.TestCase):
             method="POST",
         )
 
-    def test_direct_ssh_to_github_is_blocked(self) -> None:
+    def test_tcp_connection_to_github_ssh_is_allowed(self) -> None:
         """
-        Verify that direct SSH connections are blocked.
+        Verify that non-HTTP TCP connections are passed through without rules.
         """
 
-        self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
+        self.assert_tcp_allowed("TCP connection to github.com SSH", "github.com", 22)
 
     def test_direct_dns_queries_to_public_resolver_are_proxied(self) -> None:
         """

@@ -264,6 +264,22 @@ class DNSFlowLike(Protocol):
     response: object | None
 
 
+class ServerConnLike(Protocol):
+    """
+    Subset of mitmproxy server connection attributes used by the addon.
+    """
+
+    address: tuple[str, int] | None
+
+
+class TCPFlowLike(Protocol):
+    """
+    Subset of mitmproxy TCP flow behavior used by the addon.
+    """
+
+    server_conn: ServerConnLike
+
+
 class Mitmwall:
     """
     mitmproxy addon that enforces mitmwall hostname allow rules.
@@ -459,6 +475,21 @@ class Mitmwall:
             LOGGER.warning(f"blocked DNS host={host}; no allow rule matched")
         finally:
             self.record_request_for_flow_history_clear()
+
+    def tcp_start(self, flow: TCPFlowLike) -> None:
+        """
+        Log non-HTTP TCP connections without applying any allow rules.
+
+        All non-HTTP TCP traffic is passed through transparently. This hook
+        records the destination for observability in the mitmproxy log.
+        """
+
+        address = flow.server_conn.address
+        if address is not None:
+            host, port = address
+            LOGGER.info(f"tcp connection host={host} port={port}")
+        else:
+            LOGGER.info("tcp connection with unknown destination")
 
     def is_dns_allowed(self, host: str) -> MatchResult:
         """

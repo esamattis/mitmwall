@@ -26,5 +26,6 @@ exec "$bindir/mitmweb" \
   --web-port 58081 \
   --mode transparent \
   --mode dns@58053 \
+  --rawtcp \
   --showhost \
   -s "$addon_entrypoint"

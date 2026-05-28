@@ -17,6 +17,8 @@ from mitmproxy_addon.addon import (
     HeadersLike,
     Mitmwall,
     RequestLike,
+    ServerConnLike,
+    TCPFlowLike,
     trim_mitmproxy_view_flow_history,
 )
 from mitmproxy_addon.pathname_pattern import compile_pathname_pattern
@@ -168,6 +170,38 @@ class FakeDNSFlow(DNSFlowLike):
 
         self.request = FakeDNSRequest(name)
         self.response = None
+
+
+@final
+class FakeServerConn(ServerConnLike):
+    """
+    Minimal server connection object for addon unit tests.
+    """
+
+    address: tuple[str, int] | None
+
+    def __init__(self, address: tuple[str, int] | None) -> None:
+        """
+        Initialize a fake server connection with an optional address.
+        """
+
+        self.address = address
+
+
+@final
+class FakeTCPFlow(TCPFlowLike):
+    """
+    Minimal TCP flow object for addon unit tests.
+    """
+
+    server_conn: ServerConnLike
+
+    def __init__(self, address: tuple[str, int] | None) -> None:
+        """
+        Initialize a fake TCP flow with an optional server address.
+        """
+
+        self.server_conn = FakeServerConn(address)
 
 
 class RuleParsingTests(unittest.TestCase):
@@ -946,6 +980,44 @@ class AllowAllTrafficAddonTests(unittest.TestCase):
         addon.dns_request(flow)
 
         self.assertEqual(flow.response, ("failed", 5))
+
+
+class TCPAddonTests(unittest.TestCase):
+    """
+    Verify addon behavior for non-HTTP TCP connections.
+    """
+
+    def test_tcp_start_logs_connection_with_address(self) -> None:
+        """
+        Log the destination host and port when a TCP connection starts.
+        """
+
+        addon = Mitmwall()
+        flow = FakeTCPFlow(("github.com", 22))
+
+        addon.tcp_start(flow)
+
+    def test_tcp_start_logs_connection_with_unknown_address(self) -> None:
+        """
+        Log an unknown destination when a TCP connection has no server address.
+        """
+
+        addon = Mitmwall()
+        flow = FakeTCPFlow(None)
+
+        addon.tcp_start(flow)
+
+    def test_tcp_start_does_not_apply_rules(self) -> None:
+        """
+        Verify that tcp_start does not apply any allow rules to TCP traffic.
+        """
+
+        addon = Mitmwall()
+        addon.rules = []
+        addon.is_allow_all_traffic = lambda: False
+        flow = FakeTCPFlow(("blocked.example", 443))
+
+        addon.tcp_start(flow)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,12 @@
 domain = "github.com"
 
 [[allow]]
+domain = "towel.blinkenlights.nl"
+
+[[allow]]
+domain_regex = '.+\.ntp\.ubuntu\.com'
+
+[[allow]]
 domain = "github.com"
 methods = ["POST"]
 pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
