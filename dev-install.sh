@@ -13,5 +13,6 @@ fi
 
 ./install.sh
 user_group=$(id -gn mitmwall)
-install -o root -g "$user_group" -m 0640 ./example-rules.toml /etc/mitmwall/rules.d/5-examples.toml
+rm -f /etc/mitmwall/rules.d/5-examples.toml
+install -o root -g "$user_group" -m 0640 ./integration-test-rules.toml /etc/mitmwall/rules.d/5-integration-tests.toml
 systemctl restart mitmwall.service

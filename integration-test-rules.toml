@@ -1,0 +1,81 @@
+# mitmwall rules for integration tests.
+# Installed to /etc/mitmwall/rules.d/5-integration-tests.toml by dev-install.sh.
+
+[[allow]]
+domain = "github.com"
+
+[[allow]]
+domain = "github.com"
+methods = ["POST"]
+pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
+
+[[allow]]
+domain = "githubusercontent.com"
+include_subdomains = true
+
+[[allow]]
+domain = "esamatti.fi"
+
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = "/pathname-pattern/:slug/action"
+methods = ["POST"]
+
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = ["/anything/:slug/foo", "/anything/:slug/bar"]
+methods = ["POST"]
+
+[[allow]]
+domain = "pie.dev"
+pathname_regex = '^/pathname-regex/[^/]+/info$'
+methods = ["POST"]
+
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = "/headers"
+methods = ["GET"]
+inject_headers = [
+    { name = "Authorization", value = "Secret" },
+    { name = "X-Mitmwall-Test", value = "enabled" },
+]
+
+[[allow]]
+domain = "pie.dev"
+methods = ["GET"]
+
+[[allow]]
+domain_regex = '(^|\.)ipinfo\.io$'
+
+## APT repositories
+[[allow]]
+domain = "ports.ubuntu.com"
+
+[[allow]]
+domain = "download.docker.com"
+
+## Rust
+[[allow]]
+domain = "index.crates.io"
+
+[[allow]]
+domain = "registry.npmjs.org"
+
+## PyPI
+[[allow]]
+domain = "pypi.org"
+[[allow]]
+domain = "files.pythonhosted.org"
+
+## Opencode
+[[allow]]
+domain = "api.githubcopilot.com"
+methods = "ANY"
+[[allow]]
+domain = "models.dev"
+[[allow]]
+domain = "opencode.ai"
+methods = "ANY"
+[[allow]]
+domain = "cdn.agentclientprotocol.com"
+pathname_pattern = "/registry/v1/latest/registry.json"

@@ -14,7 +14,7 @@ Never use any pypi packages. Only use stdlib.
 
 After any changes run `./test.sh` and `./integration_tests.sh`
 
-`example-rules.toml` are installed during integration tests.
+`integration-test-rules.toml` is installed during integration tests.
 
 See logs with:
 
