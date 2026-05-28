@@ -275,7 +275,7 @@ inject_headers = [
 
         self.assertEqual(
             [rule.domain for rule in rules],
-            ["first.example", "second.example"],
+            [("first.example",), ("second.example",)],
         )
 
     def test_load_rules_ignores_hidden_toml_files(self) -> None:
@@ -298,7 +298,7 @@ inject_headers = [
 
         self.assertEqual(
             [rule.domain for rule in rules],
-            ["visible.example"],
+            [("visible.example",)],
         )
 
     def test_parse_rules_file_accepts_pathname_pattern_array(self) -> None:
@@ -428,6 +428,130 @@ pathname_pattern = ["/headers", 123]
 """.strip()
             )
 
+    def test_parse_rules_file_accepts_domain_array(self) -> None:
+        """
+        Parse domain as an array and match any of the listed domains.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain = ["github.com", "api.github.com"]
+""".strip()
+        )
+
+        self.assertIsInstance(rule, DomainRule)
+        self.assertEqual(rule.domain, ("github.com", "api.github.com"))
+        self.assertTrue(rule.matches_host("github.com"))
+        self.assertTrue(rule.matches_host("api.github.com"))
+        self.assertFalse(rule.matches_host("other.example"))
+
+    def test_parse_rules_file_accepts_domain_array_with_include_subdomains(self) -> None:
+        """
+        Parse domain as an array with include_subdomains applying to all entries.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain = ["example.com", "example.org"]
+include_subdomains = true
+""".strip()
+        )
+
+        self.assertIsInstance(rule, DomainRule)
+        self.assertEqual(rule.domain, ("example.com", "example.org"))
+        self.assertTrue(rule.matches_host("example.com"))
+        self.assertTrue(rule.matches_host("sub.example.com"))
+        self.assertTrue(rule.matches_host("example.org"))
+        self.assertTrue(rule.matches_host("sub.example.org"))
+        self.assertFalse(rule.matches_host("other.example"))
+
+    def test_parse_rules_file_rejects_empty_domain_array(self) -> None:
+        """
+        Reject an empty domain array.
+        """
+
+        with self.assertRaisesRegex(ValueError, "non-empty string or a non-empty list"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain = []
+""".strip()
+            )
+
+    def test_parse_rules_file_rejects_non_string_domain_array_items(self) -> None:
+        """
+        Reject domain array items that are not non-empty strings.
+        """
+
+        with self.assertRaisesRegex(ValueError, "must be a non-empty string"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain = ["github.com", 123]
+""".strip()
+            )
+
+    def test_parse_rules_file_accepts_domain_regex_array(self) -> None:
+        """
+        Parse domain_regex as an array and match any of the listed patterns.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain_regex = ['(^|\\.)example\\.com$', '(^|\\.)example\\.org$']
+""".strip()
+        )
+
+        self.assertIsInstance(rule, DomainRule)
+        self.assertEqual(len(rule.domain), 2)
+        self.assertTrue(rule.matches_host("example.com"))
+        self.assertTrue(rule.matches_host("sub.example.com"))
+        self.assertTrue(rule.matches_host("example.org"))
+        self.assertTrue(rule.matches_host("sub.example.org"))
+        self.assertFalse(rule.matches_host("other.example"))
+
+    def test_parse_rules_file_rejects_empty_domain_regex_array(self) -> None:
+        """
+        Reject an empty domain_regex array.
+        """
+
+        with self.assertRaisesRegex(ValueError, "non-empty string or a non-empty list"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain_regex = []
+""".strip()
+            )
+
+    def test_parse_rules_file_rejects_non_string_domain_regex_array_items(self) -> None:
+        """
+        Reject domain_regex array items that are not non-empty strings.
+        """
+
+        with self.assertRaisesRegex(ValueError, "must be a non-empty string"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain_regex = ['^example\\.com$', 123]
+""".strip()
+            )
+
+    def test_parse_rules_file_rejects_invalid_domain_regex_in_array(self) -> None:
+        """
+        Reject invalid regex patterns in a domain_regex array.
+        """
+
+        with self.assertRaisesRegex(ValueError, "invalid domain_regex"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain_regex = ['^example\\.com$', '[invalid']
+""".strip()
+            )
+
     def _parse_single_rule(self, content: str) -> DomainRule:
         """
         Parse one domain rule from temporary TOML content.
@@ -458,7 +582,7 @@ class DNSAddonTests(unittest.TestCase):
         addon.rules = [
             DomainRule(
                 name="domain pie.dev, pathname_pattern '/headers'",
-                domain="pie.dev",
+                domain=("pie.dev",),
                 include_subdomains=False,
                 methods=("POST",),
                 pathname_filters=(
@@ -487,7 +611,7 @@ class DNSAddonTests(unittest.TestCase):
         addon.rules = [
             DomainRule(
                 name="domain_regex '^api[.]example[.]com$'",
-                domain=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                domain=(re.compile(r"^api[.]example[.]com$", re.IGNORECASE),),
                 include_subdomains=False,
                 methods=("GET",),
             )
@@ -507,7 +631,7 @@ class DNSAddonTests(unittest.TestCase):
         addon.rules = [
             DomainRule(
                 name="domain_regex '^api[.]example[.]com$'",
-                domain=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                domain=(re.compile(r"^api[.]example[.]com$", re.IGNORECASE),),
                 include_subdomains=False,
                 methods=("GET",),
             )
@@ -527,7 +651,7 @@ class DNSAddonTests(unittest.TestCase):
         addon.rules = [
             DomainRule(
                 name="domain pie.dev",
-                domain="pie.dev",
+                domain=("pie.dev",),
                 include_subdomains=False,
                 methods=("GET",),
             )
@@ -561,7 +685,7 @@ class DNSAddonTests(unittest.TestCase):
         addon.rules = [
             DomainRule(
                 name="domain pie.dev",
-                domain="pie.dev",
+                domain=("pie.dev",),
                 include_subdomains=False,
                 methods=("GET",),
             )
@@ -600,13 +724,13 @@ class HeaderInjectionAddonTests(unittest.TestCase):
         addon.rules = [
             DomainRule(
                 name="domain pie.dev",
-                domain="pie.dev",
+                domain=("pie.dev",),
                 include_subdomains=False,
                 methods=("GET",),
             ),
             DomainRule(
                 name="domain pie.dev, pathname_pattern '/headers'",
-                domain="pie.dev",
+                domain=("pie.dev",),
                 include_subdomains=False,
                 methods=("GET",),
                 pathname_filters=(

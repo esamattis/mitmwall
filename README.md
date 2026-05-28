@@ -117,6 +117,7 @@ The [example rules](example-rules.toml) from this repository are installed to
 ```toml
 [[allow]]
 domain = "example.com"            # Exact hostname to allow (required*).
+                                   # May be a single string or an array of hostnames.
 include_subdomains = true         # Also match *.example.com (default: false).
 methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
                                   # Use methods = "ANY" to allow all methods.
@@ -136,6 +137,7 @@ inject_headers = [
 
 [[allow]]
 domain_regex = '(^|\.)example\.(com|org)$'  # Python regex for hostname (required*).
+                                            # May be a single string or an array of patterns.
 methods = "ANY"
 ```
 
@@ -228,6 +230,26 @@ pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
 domain_regex = '(^|\.)ipinfo\.io$'
+
+# Multiple exact hostnames in a single rule.
+[[allow]]
+domain = ["registry.npmjs.org", "registry.yarnpkg.com"]
+
+# Multiple regex patterns in a single rule.
+[[allow]]
+domain_regex = ['(^|\.)npmjs\.org$', '(^|\.)yarnpkg\.com$']
+
+# Multiple pathname patterns — matches if any pattern matches.
+[[allow]]
+domain = "example.com"
+pathname_pattern = ["/api/v1/:resource", "/api/v2/:resource"]
+methods = ["GET"]
+
+# Multiple pathname regexes — matches if any regex matches.
+[[allow]]
+domain = "example.com"
+pathname_regex = ['^/static/.*$', '^/assets/.*$']
+methods = ["GET"]
 ```
 
 After editing files in `/etc/mitmwall/rules.d`, restart the service:

@@ -6,6 +6,7 @@
 #
 # [[allow]]
 # domain = "example.com"            # Exact hostname to allow (required*).
+#                                   # May be a single string or an array of hostnames.
 # include_subdomains = true         # Also match *.example.com (default: false).
 # methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
 #                                   # Use methods = "ANY" to allow all methods.
@@ -20,6 +21,7 @@
 #
 # [[allow]]
 # domain_regex = '(^|\.)example\.(com|org)$'  # Python regex for hostname (required*).
+#                                   # May be a single string or an array of patterns.
 # methods = "ANY"
 #
 # ─── Key rules ────────────────────────────────────────────────────────────────

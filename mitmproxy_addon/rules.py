@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeGuard
+from typing import TypeGuard, cast
 from urllib.parse import urlsplit
 
 import tomllib
@@ -67,7 +67,7 @@ class DomainRule:
     """
 
     name: str
-    domain: str | re.Pattern[str]
+    domain: tuple[str, ...] | tuple[re.Pattern[str], ...]
     include_subdomains: bool
     methods: tuple[str, ...]
     pathname_filters: tuple[PathnameFilter, ...] = ()
@@ -79,11 +79,19 @@ class DomainRule:
         """
 
         normalized = normalize_host(host)
-        if isinstance(self.domain, re.Pattern):
-            return self.domain.search(normalized) is not None
-        domain = normalize_host(self.domain)
-        return normalized == domain or (
-            self.include_subdomains and normalized.endswith(f".{domain}")
+        if not self.domain:
+            return False
+        if isinstance(self.domain[0], re.Pattern):
+            patterns = cast("tuple[re.Pattern[str], ...]", self.domain)
+            return any(
+                pattern.search(normalized) is not None
+                for pattern in patterns
+            )
+        domains = cast("tuple[str, ...]", self.domain)
+        return any(
+            normalized == normalize_host(d)
+            or (self.include_subdomains and normalized.endswith(f".{normalize_host(d)}"))
+            for d in domains
         )
 
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
@@ -150,17 +158,6 @@ def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
     """
 
     return isinstance(value, dict)
-
-
-def require_string(rule: dict[str, object], key: str, index: int) -> str:
-    """
-    Return a required non-empty string value from an allow rule table.
-    """
-
-    value = rule.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"allow rule #{index}: {key!r} must be a non-empty string")
-    return value
 
 
 def validate_allowed_keys(
@@ -362,6 +359,66 @@ def parse_inject_headers(
     return tuple(headers)
 
 
+def parse_domain_value(
+    rule: dict[str, object], index: int
+) -> tuple[str, ...]:
+    """
+    Parse a domain value that may be a string or list of strings.
+    """
+
+    raw_value = rule.get("domain")
+    if isinstance(raw_value, str):
+        items: list[str] = [raw_value]
+    elif is_toml_array(raw_value) and raw_value:
+        items = []
+        for item_index, item in enumerate(raw_value, start=1):
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"allow rule #{index}: domain item #{item_index} must be a non-empty string"
+                )
+            items.append(item)
+    else:
+        raise ValueError(
+            f"allow rule #{index}: 'domain' must be a non-empty string or a non-empty list"
+        )
+
+    return tuple(normalize_host(item) for item in items)
+
+
+def parse_domain_regex_value(
+    rule: dict[str, object], index: int
+) -> tuple[re.Pattern[str], ...]:
+    """
+    Parse a domain_regex value that may be a string or list of strings.
+    """
+
+    raw_value = rule.get("domain_regex")
+    if isinstance(raw_value, str):
+        items: list[str] = [raw_value]
+    elif is_toml_array(raw_value) and raw_value:
+        items = []
+        for item_index, item in enumerate(raw_value, start=1):
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"allow rule #{index}: domain_regex item #{item_index} must be a non-empty string"
+                )
+            items.append(item)
+    else:
+        raise ValueError(
+            f"allow rule #{index}: 'domain_regex' must be a non-empty string or a non-empty list"
+        )
+
+    patterns: list[re.Pattern[str]] = []
+    for item in items:
+        try:
+            patterns.append(re.compile(item, re.IGNORECASE))
+        except re.error as exc:
+            raise ValueError(
+                f"allow rule #{index}: invalid domain_regex {item!r}: {exc}"
+            ) from exc
+    return tuple(patterns)
+
+
 def parse_rules_file(path: Path) -> list[DomainRule]:
     """
     Load and validate allow rules from a single TOML file.
@@ -417,17 +474,17 @@ def parse_rules_file(path: Path) -> list[DomainRule]:
                 },
                 index,
             )
-            domain = require_string(rule, "domain", index)
+            domains = parse_domain_value(rule, index)
             include_subdomains = rule.get("include_subdomains", False)
             if not isinstance(include_subdomains, bool):
                 raise ValueError(
                     f"allow rule #{index}: 'include_subdomains' must be a boolean"
                 )
-            normalized_domain = normalize_host(domain)
+            domain_label = ", ".join(domains)
             parsed_rules.append(
                 DomainRule(
-                    name=rule_name(f"domain {normalized_domain}", pathname_filters),
-                    domain=normalized_domain,
+                    name=rule_name(f"domain {domain_label}", pathname_filters),
+                    domain=domains,
                     include_subdomains=include_subdomains,
                     methods=methods,
                     pathname_filters=pathname_filters,
@@ -446,17 +503,12 @@ def parse_rules_file(path: Path) -> list[DomainRule]:
                 },
                 index,
             )
-            domain_regex = require_string(rule, "domain_regex", index)
-            try:
-                pattern = re.compile(domain_regex, re.IGNORECASE)
-            except re.error as exc:
-                raise ValueError(
-                    f"allow rule #{index}: invalid domain_regex {domain_regex!r}: {exc}"
-                ) from exc
+            patterns = parse_domain_regex_value(rule, index)
+            regex_label = ", ".join(p.pattern for p in patterns)
             parsed_rules.append(
                 DomainRule(
-                    name=rule_name(f"domain_regex {domain_regex!r}", pathname_filters),
-                    domain=pattern,
+                    name=rule_name(f"domain_regex {regex_label}", pathname_filters),
+                    domain=patterns,
                     include_subdomains=False,
                     methods=methods,
                     pathname_filters=pathname_filters,
@@ -473,16 +525,19 @@ def describe_rule(index: int, rule: DomainRule) -> str:
     """
 
     methods = ",".join(rule.methods)
-    if isinstance(rule.domain, re.Pattern):
+    if rule.domain and isinstance(rule.domain[0], re.Pattern):
+        regex_patterns = cast("tuple[re.Pattern[str], ...]", rule.domain)
+        pattern_strs = [p.pattern for p in regex_patterns]
         parts = [
             f"allow rule #{index}:",
-            f"domain_regex={rule.domain.pattern!r}",
+            f"domain_regex={pattern_strs!r}",
             f"methods={methods}",
         ]
     else:
+        domain_strs = cast("tuple[str, ...]", rule.domain)
         parts = [
             f"allow rule #{index}:",
-            f"domain={rule.domain!r}",
+            f"domain={list(domain_strs)!r}",
             f"include_subdomains={rule.include_subdomains}",
             f"methods={methods}",
         ]

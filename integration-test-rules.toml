@@ -56,7 +56,12 @@ domain = "pie.dev"
 methods = ["GET"]
 
 [[allow]]
-domain_regex = '(^|\.)ipinfo\.io$'
+domain = ["httpbin.org", "pie.dev"]
+methods = ["GET"]
+pathname_pattern = "/get"
+
+[[allow]]
+domain_regex = ['(^|\.)ipinfo\.io$', '(^|\.)httpbin\.org$']
 
 ## APT repositories
 [[allow]]
