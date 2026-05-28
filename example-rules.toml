@@ -39,11 +39,12 @@
 #
 # ──────────────────────────────────────────────────────────────────────────────
 
-#
+# Allow GETs
 [[allow]]
 domain = "github.com"
 [[allow]]
 domain = "ghcr.io"
+
 # Include subdomains so hosts like raw.githubusercontent.com are allowed.
 [[allow]]
 domain = "githubusercontent.com"
@@ -51,39 +52,24 @@ include_subdomains = true
 [[allow]]
 domain = "api.github.com"
 
- # Read-only and write queries in GraphQL are both POST :(
- # Limit to our own GraphQL API key
+
+# Allow `git pull` and `git push` for `esamattis`
+[[allow]]
+domain = "github.com"
+methods = ["POST"]
+pathname_pattern = [
+    "/esamattis/:repo.git/git-upload-pack" # pull
+    "/esamattis/:repo.git/git-receive-pack", # push
+]
+
+# Read-only and write queries in GraphQL are both POST :(
+# Limit to our own GraphQL API key
 # [[allow]]
 # domain = "api.github.com"
 # pathname_pattern = "/graphql"
 # methods = ["POST"]
 # inject_headers = [{ name = "Authorization", value = "token github_pat_... " }]
 
-
-# Allow `git fetch` for `esamattis`
-[[allow]]
-domain = "github.com"
-methods = ["POST"]
-pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
-
-# Allow `git push` for `esamattis`
-# [[allow]]
-# domain = "github.com"
-# methods = ["POST"]
-# pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
-
-# Pathname pattern-restricted rule: allows POST to a specific pie.dev test
-# pathname shape. The :slug parameter matches exactly one pathname segment.
-[[allow]]
-domain = "pie.dev"
-pathname_pattern = "/pathname-pattern/:slug/action"
-methods = ["POST"]
-
-# Pathname pattern array rule: allows POST when any listed pattern matches.
-[[allow]]
-domain = "pie.dev"
-pathname_pattern = ["/anything/:slug/foo", "/anything/:slug/bar"]
-methods = ["POST"]
 
 # Pathname regex-restricted rule: allows POST to a specific pie.dev test
 # pathname shape.
@@ -92,13 +78,8 @@ domain = "pie.dev"
 pathname_regex = '^/pathname-regex/[^/]+/info$'
 methods = ["POST"]
 
-# Exact host only: esamatti.fi is allowed, but www.esamatti.fi is blocked.
-[[allow]]
-domain = "esamatti.fi"
 
-[[allow]]
-domain = "downloads.mitmproxy.org"
-
+# Inject headers
 [[allow]]
 domain = "pie.dev"
 pathname_pattern = "/headers"
@@ -107,10 +88,6 @@ inject_headers = [
     { name = "Authorization", value = "Secret" },
     { name = "X-Mitmwall-Test", value = "enabled" },
 ]
-
-[[allow]]
-domain = "pie.dev"
-methods = ["GET"]
 
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]
@@ -148,7 +125,3 @@ methods = "ANY"
 [[allow]]
 domain = "cdn.agentclientprotocol.com"
 pathname_pattern = "/registry/v1/latest/registry.json"
-
-## Homebrew / Linuxbrew
-[[allow]]
-domain = "formulae.brew.sh"
