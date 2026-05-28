@@ -132,6 +132,11 @@ block_dns = true
 # Clear mitmproxy's in-memory flow history after this many HTTP requests.
 # The default is 1000.
 flow_history_clear_interval = 1000
+
+# Keep this many newest flow-history entries when trimming flow history.
+# The default is 500. If trimming fails, mitmwall falls back to clearing all
+# flow history entries.
+flow_history_keep_entries = 500
 EOF
 fi
 chown root:"$user_group" "$addon_config_file"

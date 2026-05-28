@@ -3,12 +3,18 @@ mitmproxy addon runtime for mitmwall allowlist enforcement.
 """
 
 import socket
+from collections.abc import Iterable, Sequence
 from importlib import import_module
 from typing import Callable, Protocol, cast
 
 from .addon_config import AddonConfig
 from .addon_logging import LOGGER, setup_logging
-from .constants import DEFAULT_BLOCK_DNS, DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL, RULES_DIR
+from .constants import (
+    DEFAULT_BLOCK_DNS,
+    DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
+    DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
+    RULES_DIR,
+)
 from .rules import (
     MatchResult,
     Rule,
@@ -41,6 +47,20 @@ class MitmproxyMasterLike(Protocol):
     """
 
     commands: MitmproxyCommandCallerLike
+    addons: "MitmproxyAddonManagerLike"
+
+
+class MitmproxyAddonManagerLike(Protocol):
+    """
+    Subset of mitmproxy's addon manager used by the addon.
+    """
+
+    def get(self, addon_name: str) -> object | None:
+        """
+        Return a loaded mitmproxy addon by name.
+        """
+
+        ...
 
 
 class MitmproxyContextLike(Protocol):
@@ -51,13 +71,80 @@ class MitmproxyContextLike(Protocol):
     master: MitmproxyMasterLike
 
 
-def clear_mitmproxy_flow_history() -> None:
+class MitmproxyViewLike(Protocol):
     """
-    Clear mitmproxy's in-memory flow history using the built-in view command.
+    Subset of mitmproxy's view addon used to trim flow history.
+    """
+
+    def clear(self) -> None:
+        """
+        Clear all stored flows from the view.
+        """
+
+        ...
+
+    def add(self, flows: Sequence[object]) -> None:
+        """
+        Add flows back to the view.
+        """
+
+        ...
+
+
+def get_mitmproxy_view_store_values(view: object) -> list[object]:
+    """
+    Return mitmproxy view store values after validating the private store shape.
+    """
+
+    store: object | None = getattr(view, "_store", None)
+    if store is None:
+        raise RuntimeError("mitmproxy view addon does not expose _store")
+
+    values_method = getattr(store, "values", None)
+    if not callable(values_method):
+        raise RuntimeError("mitmproxy view _store does not expose values()")
+
+    return list(cast(Iterable[object], values_method()))
+
+
+def call_mitmproxy_full_flow_history_clear(ctx: MitmproxyContextLike) -> None:
+    """
+    Clear all mitmproxy flow history using the stable command interface.
+    """
+
+    _result = ctx.master.commands.call("view.clear")
+
+
+def trim_mitmproxy_view_flow_history(view: MitmproxyViewLike, keep_entries: int) -> int:
+    """
+    Trim mitmproxy's view to the newest stored flows and return the retained count.
+    """
+
+    recent_flows = get_mitmproxy_view_store_values(view)[-keep_entries:]
+    view.clear()
+    view.add(recent_flows)
+    return len(recent_flows)
+
+
+def clear_mitmproxy_flow_history(keep_entries: int) -> int:
+    """
+    Trim mitmproxy's flow history, falling back to a full clear if trimming fails.
     """
 
     ctx = cast(MitmproxyContextLike, cast(object, import_module("mitmproxy.ctx")))
-    _result = ctx.master.commands.call("view.clear")
+    try:
+        view = ctx.master.addons.get("view")
+        if view is None:
+            raise RuntimeError("mitmproxy view addon is not loaded")
+
+        return trim_mitmproxy_view_flow_history(
+            cast(MitmproxyViewLike, view),
+            keep_entries,
+        )
+    except Exception as exc:
+        LOGGER.error(f"failed to trim mitmproxy flow history: {exc}; clearing all")
+        call_mitmproxy_full_flow_history_clear(ctx)
+        return 0
 
 
 class HeadersLike(Protocol):
@@ -153,8 +240,9 @@ class Mitmwall:
         self.rule_descriptions: tuple[str, ...] = ()
         self.block_dns: bool = DEFAULT_BLOCK_DNS
         self.flow_history_clear_interval: int = DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL
+        self.flow_history_keep_entries: int = DEFAULT_FLOW_HISTORY_KEEP_ENTRIES
         self.requests_since_flow_history_clear: int = 0
-        self.flow_history_clearer: Callable[[], None] = clear_mitmproxy_flow_history
+        self.flow_history_clearer: Callable[[int], int] = clear_mitmproxy_flow_history
         self.local_hostname: str = normalize_host(socket.gethostname())
 
     def load(self, _loader: object) -> None:
@@ -188,15 +276,21 @@ class Mitmwall:
 
         previous_block_dns = self.block_dns
         previous_flow_history_clear_interval = self.flow_history_clear_interval
+        previous_flow_history_keep_entries = self.flow_history_keep_entries
         self.block_dns = addon_config.block_dns
         self.flow_history_clear_interval = addon_config.flow_history_clear_interval
+        self.flow_history_keep_entries = addon_config.flow_history_keep_entries
         if self.block_dns != previous_block_dns:
             LOGGER.info(f"DNS filtering {'enabled' if self.block_dns else 'disabled'}")
-        if self.flow_history_clear_interval != previous_flow_history_clear_interval:
+        if (
+            self.flow_history_clear_interval != previous_flow_history_clear_interval
+            or self.flow_history_keep_entries != previous_flow_history_keep_entries
+        ):
             self.requests_since_flow_history_clear = 0
             LOGGER.info(
-                "flow history will be cleared every "
-                + f"{self.flow_history_clear_interval} request(s)"
+                "flow history will be trimmed every "
+                + f"{self.flow_history_clear_interval} request(s), keeping "
+                + f"{self.flow_history_keep_entries} entries"
             )
 
     def record_request_for_flow_history_clear(self) -> None:
@@ -210,12 +304,12 @@ class Mitmwall:
 
         self.requests_since_flow_history_clear = 0
         try:
-            self.flow_history_clearer()
+            retained_entries = self.flow_history_clearer(self.flow_history_keep_entries)
         except Exception as exc:
             LOGGER.error(f"failed to clear mitmproxy flow history: {exc}")
             return
 
-        LOGGER.info("cleared mitmproxy flow history")
+        LOGGER.info(f"trimmed mitmproxy flow history to {retained_entries} entries")
 
     def reload_rules(self) -> None:
         """

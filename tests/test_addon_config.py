@@ -8,6 +8,7 @@ from mitmproxy_addon.addon_config import default_addon_config, parse_addon_confi
 from mitmproxy_addon.constants import (
     DEFAULT_BLOCK_DNS,
     DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
+    DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
 )
 
 
@@ -29,6 +30,10 @@ class AddonConfigTests(unittest.TestCase):
             addon_config.flow_history_clear_interval,
             DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
         )
+        self.assertEqual(
+            addon_config.flow_history_keep_entries,
+            DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
+        )
 
     def test_parse_addon_config_accepts_block_dns_false(self) -> None:
         """
@@ -40,12 +45,14 @@ class AddonConfigTests(unittest.TestCase):
                 "log_level": "debug",
                 "block_dns": False,
                 "flow_history_clear_interval": 500,
+                "flow_history_keep_entries": 250,
             }
         )
 
         self.assertEqual(addon_config.log_level_name, "debug")
         self.assertFalse(addon_config.block_dns)
         self.assertEqual(addon_config.flow_history_clear_interval, 500)
+        self.assertEqual(addon_config.flow_history_keep_entries, 250)
 
     def test_parse_addon_config_rejects_non_boolean_block_dns(self) -> None:
         """
@@ -65,6 +72,17 @@ class AddonConfigTests(unittest.TestCase):
             "'flow_history_clear_interval' must be a positive integer",
         ):
             _addon_config = parse_addon_config({"flow_history_clear_interval": 0})
+
+    def test_parse_addon_config_rejects_invalid_flow_history_keep_entries(self) -> None:
+        """
+        Reject flow history retention counts that are not positive integers.
+        """
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "'flow_history_keep_entries' must be a positive integer",
+        ):
+            _addon_config = parse_addon_config({"flow_history_keep_entries": 0})
 
     def test_parse_addon_config_rejects_unknown_keys(self) -> None:
         """

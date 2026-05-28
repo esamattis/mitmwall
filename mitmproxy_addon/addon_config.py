@@ -12,6 +12,7 @@ from .constants import (
     ADDON_CONFIG_FILE,
     DEFAULT_BLOCK_DNS,
     DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
+    DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
     DEFAULT_LOG_LEVEL_NAME,
     LOG_LEVELS,
 )
@@ -27,6 +28,7 @@ class AddonConfig:
     log_level: int
     block_dns: bool
     flow_history_clear_interval: int
+    flow_history_keep_entries: int
 
 
 def default_addon_config() -> AddonConfig:
@@ -39,6 +41,7 @@ def default_addon_config() -> AddonConfig:
         log_level=LOG_LEVELS[DEFAULT_LOG_LEVEL_NAME],
         block_dns=DEFAULT_BLOCK_DNS,
         flow_history_clear_interval=DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
+        flow_history_keep_entries=DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
     )
 
 
@@ -80,6 +83,17 @@ def parse_flow_history_clear_interval(value: object) -> int:
     return value
 
 
+def parse_flow_history_keep_entries(value: object) -> int:
+    """
+    Parse and validate how many recent mitmproxy flows should be retained.
+    """
+
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("'flow_history_keep_entries' must be a positive integer")
+
+    return value
+
+
 def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
     """
     Return whether a TOML value is a table.
@@ -99,6 +113,7 @@ def parse_addon_config(config_value: object) -> AddonConfig:
     extra_top_level_keys = set(config_value) - {
         "block_dns",
         "flow_history_clear_interval",
+        "flow_history_keep_entries",
         "log_level",
     }
     if extra_top_level_keys:
@@ -115,11 +130,18 @@ def parse_addon_config(config_value: object) -> AddonConfig:
             DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
         )
     )
+    flow_history_keep_entries = parse_flow_history_keep_entries(
+        config_value.get(
+            "flow_history_keep_entries",
+            DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
+        )
+    )
     return AddonConfig(
         log_level_name=log_level_name,
         log_level=log_level,
         block_dns=block_dns,
         flow_history_clear_interval=flow_history_clear_interval,
+        flow_history_keep_entries=flow_history_keep_entries,
     )
 
 

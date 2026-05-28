@@ -5,6 +5,7 @@ Unit tests for allow-rule parsing and request header injections.
 import re
 import tempfile
 import unittest
+from collections.abc import Sequence
 from pathlib import Path
 from typing import final, override
 
@@ -16,6 +17,7 @@ from mitmproxy_addon.addon import (
     HeadersLike,
     Mitmwall,
     RequestLike,
+    trim_mitmproxy_view_flow_history,
 )
 from mitmproxy_addon.pathname_pattern import compile_pathname_pattern
 from mitmproxy_addon.rules import (
@@ -518,6 +520,7 @@ class FakeFlowHistoryClearer:
     """
 
     calls: int
+    keep_entries_values: list[int]
 
     def __init__(self) -> None:
         """
@@ -525,13 +528,55 @@ class FakeFlowHistoryClearer:
         """
 
         self.calls = 0
+        self.keep_entries_values = []
 
-    def __call__(self) -> None:
+    def __call__(self, keep_entries: int) -> int:
         """
-        Record a flow history clear request.
+        Record a flow history trim request.
         """
 
         self.calls += 1
+        self.keep_entries_values.append(keep_entries)
+        return keep_entries
+
+
+@final
+class FakeMitmproxyView:
+    """
+    Minimal mitmproxy view test double for flow history trimming.
+    """
+
+    _store: dict[str, object]
+
+    def __init__(self, flows: list[object]) -> None:
+        """
+        Initialize a fake view with insertion-ordered flow history.
+        """
+
+        self._store = {str(index): flow for index, flow in enumerate(flows)}
+
+    def clear(self) -> None:
+        """
+        Clear all fake stored flows.
+        """
+
+        self._store.clear()
+
+    def add(self, flows: Sequence[object]) -> None:
+        """
+        Add fake flows back to the store.
+        """
+
+        self._store.update(
+            (str(index), flow) for index, flow in enumerate(flows, start=len(self._store))
+        )
+
+    def stored_flows(self) -> list[object]:
+        """
+        Return fake stored flows in insertion order.
+        """
+
+        return list(self._store.values())
 
 
 class FlowHistoryAddonTests(unittest.TestCase):
@@ -555,6 +600,7 @@ class FlowHistoryAddonTests(unittest.TestCase):
         addon.request(flow)
 
         self.assertEqual(flow_history_clearer.calls, 1)
+        self.assertEqual(flow_history_clearer.keep_entries_values, [500])
         self.assertEqual(addon.requests_since_flow_history_clear, 1)
 
     def test_dns_request_clears_flow_history_at_configured_interval(self) -> None:
@@ -573,7 +619,20 @@ class FlowHistoryAddonTests(unittest.TestCase):
         addon.dns_request(flow)
 
         self.assertEqual(flow_history_clearer.calls, 1)
+        self.assertEqual(flow_history_clearer.keep_entries_values, [500])
         self.assertEqual(addon.requests_since_flow_history_clear, 1)
+
+    def test_trim_flow_history_keeps_newest_entries(self) -> None:
+        """
+        Preserve the newest flow history entries when trimming mitmproxy's view.
+        """
+
+        view = FakeMitmproxyView(["oldest", "middle", "newest"])
+
+        retained_entries = trim_mitmproxy_view_flow_history(view, 2)
+
+        self.assertEqual(retained_entries, 2)
+        self.assertEqual(view.stored_flows(), ["middle", "newest"])
 
 
 if __name__ == "__main__":
