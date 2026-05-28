@@ -318,6 +318,39 @@ class MitmwallNetworkTests(unittest.TestCase):
             method="POST",
         )
 
+    def test_pathname_pattern_array_allows_first_pattern(self) -> None:
+        """
+        Verify that pathname_pattern array permits a request matching the first pattern.
+        """
+
+        self.assert_url_allowed(
+            "pathname_pattern array first pattern",
+            "https://pie.dev/anything/mitmwall/foo",
+            method="POST",
+        )
+
+    def test_pathname_pattern_array_allows_second_pattern(self) -> None:
+        """
+        Verify that pathname_pattern array permits a request matching the second pattern.
+        """
+
+        self.assert_url_allowed(
+            "pathname_pattern array second pattern",
+            "https://pie.dev/anything/mitmwall/bar",
+            method="POST",
+        )
+
+    def test_pathname_pattern_array_blocks_nonmatching_path(self) -> None:
+        """
+        Verify that pathname_pattern array blocks a request matching no pattern.
+        """
+
+        self.assert_url_blocked(
+            "pathname_pattern array blocks nonmatching path",
+            "https://pie.dev/anything/mitmwall/baz",
+            method="POST",
+        )
+
     def test_pathname_regex_rule_allows_matching_post(self) -> None:
         """
         Verify that pathname_regex permits a matching POST request.

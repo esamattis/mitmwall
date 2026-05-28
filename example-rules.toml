@@ -79,6 +79,12 @@ domain = "pie.dev"
 pathname_pattern = "/pathname-pattern/:slug/action"
 methods = ["POST"]
 
+# Pathname pattern array rule: allows POST when any listed pattern matches.
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = ["/anything/:slug/foo", "/anything/:slug/bar"]
+methods = ["POST"]
+
 # Pathname regex-restricted rule: allows POST to a specific pie.dev test
 # pathname shape.
 [[allow]]
@@ -136,6 +142,9 @@ domain = "api.githubcopilot.com"
 methods = "ANY"
 [[allow]]
 domain = "models.dev"
+[[allow]]
+domain = "opencode.ai"
+methods = "ANY"
 [[allow]]
 domain = "cdn.agentclientprotocol.com"
 pathname_pattern = "/registry/v1/latest/registry.json"

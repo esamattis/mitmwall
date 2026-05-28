@@ -45,7 +45,7 @@ class PathnameFilter:
     """
 
     name: str
-    pattern: re.Pattern[str]
+    patterns: tuple[re.Pattern[str], ...]
     uses_search: bool
     kind: str
     source: str
@@ -56,8 +56,8 @@ class PathnameFilter:
         """
 
         if self.uses_search:
-            return self.pattern.search(pathname) is not None
-        return self.pattern.fullmatch(pathname) is not None
+            return any(p.search(pathname) is not None for p in self.patterns)
+        return any(p.fullmatch(pathname) is not None for p in self.patterns)
 
 
 @dataclass(frozen=True)
@@ -241,26 +241,50 @@ def parse_pathname_filter(rule: dict[str, object], index: int) -> PathnameFilter
             ) from exc
         return PathnameFilter(
             name=f"pathname_regex {pathname_regex!r}",
-            pattern=pattern,
+            patterns=(pattern,),
             uses_search=True,
             kind="pathname_regex",
             source=pathname_regex,
         )
 
     if has_pathname_pattern:
-        pathname_pattern = require_string(rule, "pathname_pattern", index)
-        try:
-            pattern = compile_pathname_pattern(pathname_pattern)
-        except ValueError as exc:
+        raw_value = rule["pathname_pattern"]
+
+        if isinstance(raw_value, str):
+            patterns_list = [raw_value]
+        elif is_toml_array(raw_value) and raw_value:
+            patterns_list: list[str] = []
+            for item_index, item in enumerate(raw_value, start=1):
+                if not isinstance(item, str) or not item.strip():
+                    raise ValueError(
+                        f"allow rule #{index}: pathname_pattern item #{item_index} must be a non-empty string"
+                    )
+                patterns_list.append(item)
+        else:
             raise ValueError(
-                f"allow rule #{index}: invalid pathname_pattern {pathname_pattern!r}: {exc}"
-            ) from exc
+                f"allow rule #{index}: 'pathname_pattern' must be a non-empty string or a non-empty list"
+            )
+
+        compiled_patterns: list[re.Pattern[str]] = []
+        for pathname_pattern in patterns_list:
+            try:
+                compiled_patterns.append(compile_pathname_pattern(pathname_pattern))
+            except ValueError as exc:
+                raise ValueError(
+                    f"allow rule #{index}: invalid pathname_pattern {pathname_pattern!r}: {exc}"
+                ) from exc
+
+        source = (
+            patterns_list[0]
+            if len(patterns_list) == 1
+            else str(patterns_list)
+        )
         return PathnameFilter(
-            name=f"pathname_pattern {pathname_pattern!r}",
-            pattern=pattern,
+            name=f"pathname_pattern {source!r}",
+            patterns=tuple(compiled_patterns),
             uses_search=False,
             kind="pathname_pattern",
-            source=pathname_pattern,
+            source=source,
         )
 
     return None
@@ -489,7 +513,8 @@ def describe_rule(index: int, rule: Rule) -> str:
         pathname_filter = rule.pathname_filter
         parts.append(f"{pathname_filter.kind}={pathname_filter.source!r}")
         if pathname_filter.kind == "pathname_pattern":
-            parts.append(f"compiled_regex={pathname_filter.pattern.pattern!r}")
+            compiled_regexes = [p.pattern for p in pathname_filter.patterns]
+            parts.append(f"compiled_regex={compiled_regexes!r}")
 
     if rule.inject_headers:
         header_names = [header.name for header in rule.inject_headers]

@@ -304,6 +304,59 @@ inject_headers = [
             ["visible.example"],
         )
 
+    def test_parse_rules_file_accepts_pathname_pattern_array(self) -> None:
+        """
+        Parse pathname_pattern as an array and match any of the patterns.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = ["/headers", "/status/:code"]
+""".strip()
+        )
+
+        self.assertIsInstance(rule, DomainRule)
+        self.assertIsNotNone(rule.pathname_filter)
+        assert rule.pathname_filter is not None
+        self.assertEqual(rule.pathname_filter.kind, "pathname_pattern")
+        self.assertEqual(len(rule.pathname_filter.patterns), 2)
+        self.assertTrue(rule.pathname_filter.matches("/headers"))
+        self.assertTrue(rule.pathname_filter.matches("/headers/"))
+        self.assertTrue(rule.pathname_filter.matches("/status/200"))
+        self.assertFalse(rule.pathname_filter.matches("/other"))
+
+    def test_parse_rules_file_rejects_empty_pathname_pattern_array(self) -> None:
+        """
+        Reject an empty pathname_pattern array.
+        """
+
+        with self.assertRaisesRegex(ValueError, "non-empty string or a non-empty list"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = []
+""".strip()
+            )
+
+    def test_parse_rules_file_rejects_non_string_pathname_pattern_array_items(
+        self,
+    ) -> None:
+        """
+        Reject pathname_pattern array items that are not non-empty strings.
+        """
+
+        with self.assertRaisesRegex(ValueError, "must be a non-empty string"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain = "pie.dev"
+pathname_pattern = ["/headers", 123]
+""".strip()
+            )
+
     def _parse_single_rule(self, content: str) -> DomainRule:
         """
         Parse one domain rule from temporary TOML content.
@@ -342,7 +395,7 @@ class DNSAddonTests(unittest.TestCase):
                 methods=("POST",),
                 pathname_filter=PathnameFilter(
                     name="pathname_pattern '/headers'",
-                    pattern=compile_pathname_pattern("/headers"),
+                    patterns=(compile_pathname_pattern("/headers"),),
                     uses_search=False,
                     kind="pathname_pattern",
                     source="/headers",
@@ -486,7 +539,7 @@ class HeaderInjectionAddonTests(unittest.TestCase):
                 methods=("GET",),
                 pathname_filter=PathnameFilter(
                     name="pathname_pattern '/headers'",
-                    pattern=compile_pathname_pattern("/headers"),
+                    patterns=(compile_pathname_pattern("/headers"),),
                     uses_search=False,
                     kind="pathname_pattern",
                     source="/headers",
