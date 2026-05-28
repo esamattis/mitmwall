@@ -16,8 +16,8 @@ from .constants import (
     RULES_DIR,
 )
 from .rules import (
+    DomainRule,
     MatchResult,
-    Rule,
     describe_rule,
     load_rules,
     normalize_host,
@@ -236,7 +236,7 @@ class Mitmwall:
         Initialize addon state without touching runtime configuration.
         """
 
-        self.rules: list[Rule] = []
+        self.rules: list[DomainRule] = []
         self.rule_descriptions: tuple[str, ...] = ()
         self.block_dns: bool = DEFAULT_BLOCK_DNS
         self.flow_history_clear_interval: int = DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL
@@ -396,7 +396,9 @@ class Mitmwall:
                 return
 
             if self.is_local_hostname(host):
-                LOGGER.debug(f"allowed DNS host={host} because it is the local hostname")
+                LOGGER.debug(
+                    f"allowed DNS host={host} because it is the local hostname"
+                )
                 return
 
             flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
@@ -431,7 +433,7 @@ class Mitmwall:
 
         normalized_host = normalize_host(host)
         normalized_method = normalize_method(method)
-        first_match: Rule | None = None
+        first_match: DomainRule | None = None
         for rule in self.rules:
             if not rule.matches(normalized_host, normalized_method, pathname):
                 continue

@@ -63,11 +63,11 @@ class PathnameFilter:
 @dataclass(frozen=True)
 class DomainRule:
     """
-    Allow rule that matches an exact domain and optional subdomains.
+    Allow rule that matches a domain by exact name (with optional subdomains) or regex.
     """
 
     name: str
-    domain: str
+    domain: str | re.Pattern[str]
     include_subdomains: bool
     methods: tuple[str, ...]
     pathname_filters: tuple[PathnameFilter, ...] = ()
@@ -75,13 +75,15 @@ class DomainRule:
 
     def matches_host(self, host: str) -> bool:
         """
-        Return whether this rule allows the given hostname before HTTP filters.
+        Return whether this rule would allow the given hostname before HTTP filters.
         """
 
-        host = normalize_host(host)
+        normalized = normalize_host(host)
+        if isinstance(self.domain, re.Pattern):
+            return self.domain.search(normalized) is not None
         domain = normalize_host(self.domain)
-        return host == domain or (
-            self.include_subdomains and host.endswith(f".{domain}")
+        return normalized == domain or (
+            self.include_subdomains and normalized.endswith(f".{domain}")
         )
 
     def matches(self, host: str, method: str, pathname: str = "/") -> bool:
@@ -98,44 +100,6 @@ class DomainRule:
         return not self.pathname_filters or any(
             f.matches(pathname) for f in self.pathname_filters
         )
-
-
-@dataclass(frozen=True)
-class RegexRule:
-    """
-    Allow rule that matches hostnames with a regular expression.
-    """
-
-    name: str
-    pattern: re.Pattern[str]
-    methods: tuple[str, ...]
-    pathname_filters: tuple[PathnameFilter, ...] = ()
-    inject_headers: tuple[InjectedHeader, ...] = ()
-
-    def matches_host(self, host: str) -> bool:
-        """
-        Return whether this regex rule allows the given hostname before HTTP filters.
-        """
-
-        return self.pattern.search(normalize_host(host)) is not None
-
-    def matches(self, host: str, method: str, pathname: str = "/") -> bool:
-        """
-        Return whether this regex rule allows the given host, method, and pathname.
-        """
-
-        if not method_matches(self.methods, method):
-            return False
-
-        if not self.matches_host(host):
-            return False
-
-        return not self.pathname_filters or any(
-            f.matches(pathname) for f in self.pathname_filters
-        )
-
-
-Rule = DomainRule | RegexRule
 
 
 def normalize_host(host: str) -> str:
@@ -398,7 +362,7 @@ def parse_inject_headers(
     return tuple(headers)
 
 
-def parse_rules_file(path: Path) -> list[Rule]:
+def parse_rules_file(path: Path) -> list[DomainRule]:
     """
     Load and validate allow rules from a single TOML file.
     """
@@ -418,7 +382,7 @@ def parse_rules_file(path: Path) -> list[Rule]:
     if not is_toml_array(allow_rules_value):
         raise ValueError("'allow' must be a list of tables")
 
-    parsed_rules: list[Rule] = []
+    parsed_rules: list[DomainRule] = []
     for index, rule in enumerate(allow_rules_value, start=1):
         if not is_toml_table(rule):
             raise ValueError(f"allow rule #{index}: rule must be a table")
@@ -490,9 +454,10 @@ def parse_rules_file(path: Path) -> list[Rule]:
                     f"allow rule #{index}: invalid domain_regex {domain_regex!r}: {exc}"
                 ) from exc
             parsed_rules.append(
-                RegexRule(
+                DomainRule(
                     name=rule_name(f"domain_regex {domain_regex!r}", pathname_filters),
-                    pattern=pattern,
+                    domain=pattern,
+                    include_subdomains=False,
                     methods=methods,
                     pathname_filters=pathname_filters,
                     inject_headers=inject_headers,
@@ -502,23 +467,23 @@ def parse_rules_file(path: Path) -> list[Rule]:
     return parsed_rules
 
 
-def describe_rule(index: int, rule: Rule) -> str:
+def describe_rule(index: int, rule: DomainRule) -> str:
     """
     Return a log-friendly description of a parsed allow rule.
     """
 
     methods = ",".join(rule.methods)
-    if isinstance(rule, DomainRule):
+    if isinstance(rule.domain, re.Pattern):
         parts = [
             f"allow rule #{index}:",
-            f"domain={rule.domain!r}",
-            f"include_subdomains={rule.include_subdomains}",
+            f"domain_regex={rule.domain.pattern!r}",
             f"methods={methods}",
         ]
     else:
         parts = [
             f"allow rule #{index}:",
-            f"domain_regex={rule.pattern.pattern!r}",
+            f"domain={rule.domain!r}",
+            f"include_subdomains={rule.include_subdomains}",
             f"methods={methods}",
         ]
 
@@ -526,9 +491,7 @@ def describe_rule(index: int, rule: Rule) -> str:
         for pathname_filter in rule.pathname_filters:
             parts.append(f"{pathname_filter.kind}={pathname_filter.source!r}")
             if pathname_filter.kind == "pathname_pattern":
-                parts.append(
-                    f"compiled_regex={pathname_filter.pattern.pattern!r}"
-                )
+                parts.append(f"compiled_regex={pathname_filter.pattern.pattern!r}")
 
     if rule.inject_headers:
         header_names = [header.name for header in rule.inject_headers]
@@ -537,7 +500,7 @@ def describe_rule(index: int, rule: Rule) -> str:
     return " ".join(parts)
 
 
-def load_rules(path: Path = RULES_DIR) -> list[Rule]:
+def load_rules(path: Path = RULES_DIR) -> list[DomainRule]:
     """
     Load all TOML allow rules from a directory in alphabetical filename order.
     """
@@ -547,7 +510,7 @@ def load_rules(path: Path = RULES_DIR) -> list[Rule]:
     if not path.is_dir():
         raise NotADirectoryError(f"rules path is not a directory: {path}")
 
-    parsed_rules: list[Rule] = []
+    parsed_rules: list[DomainRule] = []
     rule_files = sorted(
         (
             child

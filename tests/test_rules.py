@@ -24,7 +24,6 @@ from mitmproxy_addon.rules import (
     DomainRule,
     InjectedHeader,
     PathnameFilter,
-    RegexRule,
     describe_rule,
     load_rules,
     parse_rules_file,
@@ -274,9 +273,8 @@ inject_headers = [
 
             rules = load_rules(rules_dir)
 
-        self.assertTrue(all(isinstance(rule, DomainRule) for rule in rules))
         self.assertEqual(
-            [rule.domain for rule in rules if isinstance(rule, DomainRule)],
+            [rule.domain for rule in rules],
             ["first.example", "second.example"],
         )
 
@@ -298,9 +296,8 @@ inject_headers = [
 
             rules = load_rules(rules_dir)
 
-        self.assertTrue(all(isinstance(rule, DomainRule) for rule in rules))
         self.assertEqual(
-            [rule.domain for rule in rules if isinstance(rule, DomainRule)],
+            [rule.domain for rule in rules],
             ["visible.example"],
         )
 
@@ -442,10 +439,7 @@ pathname_pattern = ["/headers", 123]
             rules = parse_rules_file(path)
 
         self.assertEqual(len(rules), 1)
-        rule = rules[0]
-        if not isinstance(rule, DomainRule):
-            raise AssertionError(f"expected DomainRule, got {type(rule)!r}")
-        return rule
+        return rules[0]
 
 
 class DNSAddonTests(unittest.TestCase):
@@ -491,9 +485,10 @@ class DNSAddonTests(unittest.TestCase):
 
         addon = Mitmwall()
         addon.rules = [
-            RegexRule(
+            DomainRule(
                 name="domain_regex '^api[.]example[.]com$'",
-                pattern=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                domain=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                include_subdomains=False,
                 methods=("GET",),
             )
         ]
@@ -510,9 +505,10 @@ class DNSAddonTests(unittest.TestCase):
 
         addon = Mitmwall()
         addon.rules = [
-            RegexRule(
+            DomainRule(
                 name="domain_regex '^api[.]example[.]com$'",
-                pattern=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                domain=re.compile(r"^api[.]example[.]com$", re.IGNORECASE),
+                include_subdomains=False,
                 methods=("GET",),
             )
         ]
