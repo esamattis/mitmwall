@@ -13,6 +13,7 @@ from .constants import (
     DEFAULT_BLOCK_DNS,
     DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
     DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
+    OPTION_ALLOW_ALL_TRAFFIC,
     RULES_DIR,
 )
 from .rules import (
@@ -26,6 +27,33 @@ from .rules import (
 )
 
 DNS_RESPONSE_CODE_REFUSED = 5
+
+
+class LoaderLike(Protocol):
+    """
+    Subset of mitmproxy's loader used to register addon options.
+    """
+
+    def add_option(
+        self,
+        name: str,
+        typespec: type[object],
+        default: object,
+        help: str,
+    ) -> None:
+        """
+        Register a mitmproxy option.
+        """
+
+        ...
+
+
+class CtxOptionsLike(Protocol):
+    """
+    Subset of mitmproxy.ctx.options used by the addon.
+    """
+
+    ...
 
 
 class MitmproxyCommandCallerLike(Protocol):
@@ -69,6 +97,7 @@ class MitmproxyContextLike(Protocol):
     """
 
     master: MitmproxyMasterLike
+    options: CtxOptionsLike
 
 
 class MitmproxyViewLike(Protocol):
@@ -145,6 +174,15 @@ def clear_mitmproxy_flow_history(keep_entries: int) -> int:
         LOGGER.error(f"failed to trim mitmproxy flow history: {exc}; clearing all")
         call_mitmproxy_full_flow_history_clear(ctx)
         return 0
+
+
+def get_allow_all_traffic_option() -> bool:
+    """
+    Return whether the allow_all_traffic mitmproxy option is enabled.
+    """
+
+    ctx = cast(MitmproxyContextLike, cast(object, import_module("mitmproxy.ctx")))
+    return cast(bool, getattr(ctx.options, OPTION_ALLOW_ALL_TRAFFIC))
 
 
 class HeadersLike(Protocol):
@@ -243,15 +281,23 @@ class Mitmwall:
         self.flow_history_keep_entries: int = DEFAULT_FLOW_HISTORY_KEEP_ENTRIES
         self.requests_since_flow_history_clear: int = 0
         self.flow_history_clearer: Callable[[int], int] = clear_mitmproxy_flow_history
+        self.is_allow_all_traffic: Callable[[], bool] = lambda: False
         self.local_hostname: str = normalize_host(socket.gethostname())
 
-    def load(self, _loader: object) -> None:
+    def load(self, loader: LoaderLike) -> None:
         """
-        Configure logging and load the current rules during addon startup.
+        Configure logging, register options, and load rules during addon startup.
         """
 
         addon_config = setup_logging()
         self.apply_addon_config(addon_config)
+        loader.add_option(
+            name=OPTION_ALLOW_ALL_TRAFFIC,
+            typespec=bool,
+            default=False,
+            help="mitmwall: Temporarily allow all traffic regardless of allow rules",
+        )
+        self.is_allow_all_traffic = get_allow_all_traffic_option
         LOGGER.info("addon loaded")
         self.reload_rules()
 
@@ -342,6 +388,11 @@ class Mitmwall:
         Allow matching requests and terminate flows that do not match any rule.
         """
 
+        if self.is_allow_all_traffic():
+            LOGGER.debug("allowed request because allow_all_traffic is enabled")
+            self.record_request_for_flow_history_clear()
+            return
+
         host = flow.request.pretty_host or flow.request.host
         method = flow.request.method
         url = flow.request.pretty_url
@@ -379,6 +430,9 @@ class Mitmwall:
         """
 
         try:
+            if self.is_allow_all_traffic():
+                LOGGER.debug("allowed DNS request because allow_all_traffic is enabled")
+                return
             if not self.block_dns:
                 LOGGER.debug("allowed DNS request because block_dns is disabled")
                 return

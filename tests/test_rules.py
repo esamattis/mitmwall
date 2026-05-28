@@ -886,5 +886,67 @@ class FlowHistoryAddonTests(unittest.TestCase):
         self.assertEqual(view.stored_flows(), ["middle", "newest"])
 
 
+class AllowAllTrafficAddonTests(unittest.TestCase):
+    """
+    Verify addon behavior when allow_all_traffic option is enabled.
+    """
+
+    def test_request_allowed_when_allow_all_traffic_is_enabled(self) -> None:
+        """
+        Allow all requests without filtering when allow_all_traffic is enabled.
+        """
+
+        addon = Mitmwall()
+        addon.rules = []
+        addon.is_allow_all_traffic = lambda: True
+        flow = FakeFlow(FakeRequest("blocked.example", "GET", "https://blocked.example/"))
+
+        addon.request(flow)
+
+        self.assertFalse(flow.killed)
+
+    def test_request_blocked_when_allow_all_traffic_is_disabled(self) -> None:
+        """
+        Block unmatched requests when allow_all_traffic is disabled.
+        """
+
+        addon = Mitmwall()
+        addon.rules = []
+        addon.is_allow_all_traffic = lambda: False
+        flow = FakeFlow(FakeRequest("blocked.example", "GET", "https://blocked.example/"))
+
+        addon.request(flow)
+
+        self.assertTrue(flow.killed)
+
+    def test_dns_request_allowed_when_allow_all_traffic_is_enabled(self) -> None:
+        """
+        Allow all DNS requests without filtering when allow_all_traffic is enabled.
+        """
+
+        addon = Mitmwall()
+        addon.rules = []
+        addon.is_allow_all_traffic = lambda: True
+        flow = FakeDNSFlow("blocked.example")
+
+        addon.dns_request(flow)
+
+        self.assertIsNone(flow.response)
+
+    def test_dns_request_blocked_when_allow_all_traffic_is_disabled(self) -> None:
+        """
+        Block unmatched DNS requests when allow_all_traffic is disabled.
+        """
+
+        addon = Mitmwall()
+        addon.rules = []
+        addon.is_allow_all_traffic = lambda: False
+        flow = FakeDNSFlow("blocked.example")
+
+        addon.dns_request(flow)
+
+        self.assertEqual(flow.response, ("failed", 5))
+
+
 if __name__ == "__main__":
     _test_program = unittest.main(verbosity=2)
