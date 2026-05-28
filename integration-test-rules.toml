@@ -33,6 +33,17 @@ methods = ["POST"]
 
 [[allow]]
 domain = "pie.dev"
+pathname_regex = ['^/regex-array/[^/]+/alpha$', '^/regex-array/[^/]+/beta$']
+methods = ["POST"]
+
+[[allow]]
+domain = "pie.dev"
+pathname_regex = '^/both/regex/[^/]+$'
+pathname_pattern = "/both/pattern/:slug"
+methods = ["POST"]
+
+[[allow]]
+domain = "pie.dev"
 pathname_pattern = "/headers"
 methods = ["GET"]
 inject_headers = [

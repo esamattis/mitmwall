@@ -318,14 +318,88 @@ pathname_pattern = ["/headers", "/status/:code"]
         )
 
         self.assertIsInstance(rule, DomainRule)
-        self.assertIsNotNone(rule.pathname_filter)
-        assert rule.pathname_filter is not None
-        self.assertEqual(rule.pathname_filter.kind, "pathname_pattern")
-        self.assertEqual(len(rule.pathname_filter.patterns), 2)
-        self.assertTrue(rule.pathname_filter.matches("/headers"))
-        self.assertTrue(rule.pathname_filter.matches("/headers/"))
-        self.assertTrue(rule.pathname_filter.matches("/status/200"))
-        self.assertFalse(rule.pathname_filter.matches("/other"))
+        self.assertEqual(len(rule.pathname_filters), 2)
+        self.assertEqual(rule.pathname_filters[0].kind, "pathname_pattern")
+        self.assertEqual(rule.pathname_filters[1].kind, "pathname_pattern")
+        self.assertTrue(rule.pathname_filters[0].matches("/headers"))
+        self.assertTrue(rule.pathname_filters[0].matches("/headers/"))
+        self.assertFalse(rule.pathname_filters[0].matches("/status/200"))
+        self.assertTrue(rule.pathname_filters[1].matches("/status/200"))
+        self.assertFalse(rule.pathname_filters[1].matches("/other"))
+
+    def test_parse_rules_file_accepts_pathname_regex_array(self) -> None:
+        """
+        Parse pathname_regex as an array and match any of the patterns.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain = "pie.dev"
+pathname_regex = ['^/foo/[^/]+/info$', '^/bar/[^/]+/data$']
+""".strip()
+        )
+
+        self.assertIsInstance(rule, DomainRule)
+        self.assertEqual(len(rule.pathname_filters), 2)
+        self.assertEqual(rule.pathname_filters[0].kind, "pathname_regex")
+        self.assertEqual(rule.pathname_filters[1].kind, "pathname_regex")
+        self.assertTrue(rule.pathname_filters[0].matches("/foo/abc/info"))
+        self.assertFalse(rule.pathname_filters[0].matches("/bar/xyz/data"))
+        self.assertTrue(rule.pathname_filters[1].matches("/bar/xyz/data"))
+        self.assertFalse(rule.pathname_filters[1].matches("/baz/abc/info"))
+
+    def test_parse_rules_file_accepts_both_pathname_regex_and_pattern(self) -> None:
+        """
+        Parse both pathname_regex and pathname_pattern in the same rule.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain = "pie.dev"
+pathname_regex = '^/api/.*$'
+pathname_pattern = "/status/:code"
+""".strip()
+        )
+
+        self.assertIsInstance(rule, DomainRule)
+        self.assertEqual(len(rule.pathname_filters), 2)
+        self.assertEqual(rule.pathname_filters[0].kind, "pathname_regex")
+        self.assertEqual(rule.pathname_filters[1].kind, "pathname_pattern")
+        self.assertTrue(rule.matches("pie.dev", "GET", "/api/test"))
+        self.assertTrue(rule.matches("pie.dev", "GET", "/status/200"))
+        self.assertFalse(rule.matches("pie.dev", "GET", "/other"))
+
+    def test_parse_rules_file_rejects_empty_pathname_regex_array(self) -> None:
+        """
+        Reject an empty pathname_regex array.
+        """
+
+        with self.assertRaisesRegex(ValueError, "non-empty string or a non-empty list"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain = "pie.dev"
+pathname_regex = []
+""".strip()
+            )
+
+    def test_parse_rules_file_rejects_non_string_pathname_regex_array_items(
+        self,
+    ) -> None:
+        """
+        Reject pathname_regex array items that are not non-empty strings.
+        """
+
+        with self.assertRaisesRegex(ValueError, "must be a non-empty string"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain = "pie.dev"
+pathname_regex = ['^/foo$', 123]
+""".strip()
+            )
 
     def test_parse_rules_file_rejects_empty_pathname_pattern_array(self) -> None:
         """
@@ -393,12 +467,14 @@ class DNSAddonTests(unittest.TestCase):
                 domain="pie.dev",
                 include_subdomains=False,
                 methods=("POST",),
-                pathname_filter=PathnameFilter(
-                    name="pathname_pattern '/headers'",
-                    patterns=(compile_pathname_pattern("/headers"),),
-                    uses_search=False,
-                    kind="pathname_pattern",
-                    source="/headers",
+                pathname_filters=(
+                    PathnameFilter(
+                        name="pathname_pattern '/headers'",
+                        pattern=compile_pathname_pattern("/headers"),
+                        uses_search=False,
+                        kind="pathname_pattern",
+                        source="/headers",
+                    ),
                 ),
             )
         ]
@@ -537,12 +613,14 @@ class HeaderInjectionAddonTests(unittest.TestCase):
                 domain="pie.dev",
                 include_subdomains=False,
                 methods=("GET",),
-                pathname_filter=PathnameFilter(
-                    name="pathname_pattern '/headers'",
-                    patterns=(compile_pathname_pattern("/headers"),),
-                    uses_search=False,
-                    kind="pathname_pattern",
-                    source="/headers",
+                pathname_filters=(
+                    PathnameFilter(
+                        name="pathname_pattern '/headers'",
+                        pattern=compile_pathname_pattern("/headers"),
+                        uses_search=False,
+                        kind="pathname_pattern",
+                        source="/headers",
+                    ),
                 ),
                 inject_headers=(
                     InjectedHeader(

@@ -384,6 +384,75 @@ class MitmwallNetworkTests(unittest.TestCase):
             method="POST",
         )
 
+    def test_pathname_regex_array_allows_first_pattern(self) -> None:
+        """
+        Verify that pathname_regex array permits a request matching the first pattern.
+        """
+
+        self.assert_url_allowed(
+            "pathname_regex array first pattern",
+            "https://pie.dev/regex-array/mitmwall/alpha",
+            method="POST",
+        )
+
+    def test_pathname_regex_array_allows_second_pattern(self) -> None:
+        """
+        Verify that pathname_regex array permits a request matching the second pattern.
+        """
+
+        self.assert_url_allowed(
+            "pathname_regex array second pattern",
+            "https://pie.dev/regex-array/mitmwall/beta",
+            method="POST",
+        )
+
+    def test_pathname_regex_array_blocks_nonmatching_path(self) -> None:
+        """
+        Verify that pathname_regex array blocks a request matching no pattern.
+        """
+
+        self.assert_url_blocked(
+            "pathname_regex array blocks nonmatching path",
+            "https://pie.dev/regex-array/mitmwall/gamma",
+            method="POST",
+        )
+
+    def test_pathname_regex_and_pattern_allows_regex_match(self) -> None:
+        """
+        Verify that a rule with both pathname_regex and pathname_pattern permits
+        a request matching the regex.
+        """
+
+        self.assert_url_allowed(
+            "pathname_regex and pattern allows regex match",
+            "https://pie.dev/both/regex/mitmwall",
+            method="POST",
+        )
+
+    def test_pathname_regex_and_pattern_allows_pattern_match(self) -> None:
+        """
+        Verify that a rule with both pathname_regex and pathname_pattern permits
+        a request matching the pattern.
+        """
+
+        self.assert_url_allowed(
+            "pathname_regex and pattern allows pattern match",
+            "https://pie.dev/both/pattern/mitmwall",
+            method="POST",
+        )
+
+    def test_pathname_regex_and_pattern_blocks_nonmatching_path(self) -> None:
+        """
+        Verify that a rule with both pathname_regex and pathname_pattern blocks
+        a request matching neither.
+        """
+
+        self.assert_url_blocked(
+            "pathname_regex and pattern blocks nonmatching path",
+            "https://pie.dev/both/other/mitmwall",
+            method="POST",
+        )
+
     def test_direct_ssh_to_github_is_blocked(self) -> None:
         """
         Verify that direct SSH connections are blocked.

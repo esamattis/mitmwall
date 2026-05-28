@@ -3,7 +3,7 @@ Allow rule parsing and matching for the mitmwall addon.
 """
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeGuard
@@ -45,7 +45,7 @@ class PathnameFilter:
     """
 
     name: str
-    patterns: tuple[re.Pattern[str], ...]
+    pattern: re.Pattern[str]
     uses_search: bool
     kind: str
     source: str
@@ -56,8 +56,8 @@ class PathnameFilter:
         """
 
         if self.uses_search:
-            return any(p.search(pathname) is not None for p in self.patterns)
-        return any(p.fullmatch(pathname) is not None for p in self.patterns)
+            return self.pattern.search(pathname) is not None
+        return self.pattern.fullmatch(pathname) is not None
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ class DomainRule:
     domain: str
     include_subdomains: bool
     methods: tuple[str, ...]
-    pathname_filter: PathnameFilter | None = None
+    pathname_filters: tuple[PathnameFilter, ...] = ()
     inject_headers: tuple[InjectedHeader, ...] = ()
 
     def matches_host(self, host: str) -> bool:
@@ -95,7 +95,9 @@ class DomainRule:
         if not self.matches_host(host):
             return False
 
-        return self.pathname_filter is None or self.pathname_filter.matches(pathname)
+        return not self.pathname_filters or any(
+            f.matches(pathname) for f in self.pathname_filters
+        )
 
 
 @dataclass(frozen=True)
@@ -107,7 +109,7 @@ class RegexRule:
     name: str
     pattern: re.Pattern[str]
     methods: tuple[str, ...]
-    pathname_filter: PathnameFilter | None = None
+    pathname_filters: tuple[PathnameFilter, ...] = ()
     inject_headers: tuple[InjectedHeader, ...] = ()
 
     def matches_host(self, host: str) -> bool:
@@ -128,7 +130,9 @@ class RegexRule:
         if not self.matches_host(host):
             return False
 
-        return self.pathname_filter is None or self.pathname_filter.matches(pathname)
+        return not self.pathname_filters or any(
+            f.matches(pathname) for f in self.pathname_filters
+        )
 
 
 Rule = DomainRule | RegexRule
@@ -208,86 +212,95 @@ def validate_allowed_keys(
         raise ValueError(f"allow rule #{index}: unsupported key(s): {keys}")
 
 
-def rule_name(name: str, pathname_filter: PathnameFilter | None) -> str:
+def rule_name(name: str, pathname_filters: tuple[PathnameFilter, ...]) -> str:
     """
     Build the human-readable rule name used in logs.
     """
 
-    if pathname_filter is None:
+    if not pathname_filters:
         return name
-    return f"{name}, {pathname_filter.name}"
+    filter_names = ", ".join(f.name for f in pathname_filters)
+    return f"{name}, {filter_names}"
 
 
-def parse_pathname_filter(rule: dict[str, object], index: int) -> PathnameFilter | None:
+def parse_pathname_filter_value(
+    raw_value: object,
+    key: str,
+    index: int,
+    compile_func: Callable[[str], re.Pattern[str]],
+    uses_search: bool,
+) -> list[PathnameFilter]:
     """
-    Parse an optional pathname matcher from an allow rule table.
+    Parse a pathname_regex or pathname_pattern value into a list of PathnameFilters.
     """
 
-    has_pathname_regex = "pathname_regex" in rule
-    has_pathname_pattern = "pathname_pattern" in rule
-
-    if has_pathname_regex and has_pathname_pattern:
-        raise ValueError(
-            f"allow rule #{index}: cannot set both 'pathname_regex' and 'pathname_pattern'"
-        )
-
-    if has_pathname_regex:
-        pathname_regex = require_string(rule, "pathname_regex", index)
-        try:
-            pattern = re.compile(pathname_regex)
-        except re.error as exc:
-            raise ValueError(
-                f"allow rule #{index}: invalid pathname_regex {pathname_regex!r}: {exc}"
-            ) from exc
-        return PathnameFilter(
-            name=f"pathname_regex {pathname_regex!r}",
-            patterns=(pattern,),
-            uses_search=True,
-            kind="pathname_regex",
-            source=pathname_regex,
-        )
-
-    if has_pathname_pattern:
-        raw_value = rule["pathname_pattern"]
-
-        if isinstance(raw_value, str):
-            patterns_list = [raw_value]
-        elif is_toml_array(raw_value) and raw_value:
-            patterns_list: list[str] = []
-            for item_index, item in enumerate(raw_value, start=1):
-                if not isinstance(item, str) or not item.strip():
-                    raise ValueError(
-                        f"allow rule #{index}: pathname_pattern item #{item_index} must be a non-empty string"
-                    )
-                patterns_list.append(item)
-        else:
-            raise ValueError(
-                f"allow rule #{index}: 'pathname_pattern' must be a non-empty string or a non-empty list"
-            )
-
-        compiled_patterns: list[re.Pattern[str]] = []
-        for pathname_pattern in patterns_list:
-            try:
-                compiled_patterns.append(compile_pathname_pattern(pathname_pattern))
-            except ValueError as exc:
+    if isinstance(raw_value, str):
+        items_list: list[str] = [raw_value]
+    elif is_toml_array(raw_value) and raw_value:
+        items_list = []
+        for item_index, item in enumerate(raw_value, start=1):
+            if not isinstance(item, str) or not item.strip():
                 raise ValueError(
-                    f"allow rule #{index}: invalid pathname_pattern {pathname_pattern!r}: {exc}"
-                ) from exc
-
-        source = (
-            patterns_list[0]
-            if len(patterns_list) == 1
-            else str(patterns_list)
-        )
-        return PathnameFilter(
-            name=f"pathname_pattern {source!r}",
-            patterns=tuple(compiled_patterns),
-            uses_search=False,
-            kind="pathname_pattern",
-            source=source,
+                    f"allow rule #{index}: {key} item #{item_index} must be a non-empty string"
+                )
+            items_list.append(item)
+    else:
+        raise ValueError(
+            f"allow rule #{index}: {key!r} must be a non-empty string or a non-empty list"
         )
 
-    return None
+    filters: list[PathnameFilter] = []
+    for item in items_list:
+        try:
+            compiled = compile_func(item)
+        except (re.error, ValueError) as exc:
+            raise ValueError(
+                f"allow rule #{index}: invalid {key} {item!r}: {exc}"
+            ) from exc
+        filters.append(
+            PathnameFilter(
+                name=f"{key} {item!r}",
+                pattern=compiled,
+                uses_search=uses_search,
+                kind=key,
+                source=item,
+            )
+        )
+    return filters
+
+
+def parse_pathname_filters(
+    rule: dict[str, object], index: int
+) -> tuple[PathnameFilter, ...]:
+    """
+    Parse optional pathname matchers from an allow rule table.
+    """
+
+    filters: list[PathnameFilter] = []
+
+    if "pathname_regex" in rule:
+        filters.extend(
+            parse_pathname_filter_value(
+                rule["pathname_regex"],
+                "pathname_regex",
+                index,
+                re.compile,
+                uses_search=True,
+            )
+        )
+
+    if "pathname_pattern" in rule:
+        filters.extend(
+            parse_pathname_filter_value(
+                rule["pathname_pattern"],
+                "pathname_pattern",
+                index,
+                compile_pathname_pattern,
+                uses_search=False,
+            )
+        )
+
+    return tuple(filters)
 
 
 def parse_methods(rule: dict[str, object], index: int) -> tuple[str, ...]:
@@ -424,7 +437,7 @@ def parse_rules_file(path: Path) -> list[Rule]:
             )
 
         methods = parse_methods(rule, index)
-        pathname_filter = parse_pathname_filter(rule, index)
+        pathname_filters = parse_pathname_filters(rule, index)
         inject_headers = parse_inject_headers(rule, index)
 
         if has_domain:
@@ -449,11 +462,11 @@ def parse_rules_file(path: Path) -> list[Rule]:
             normalized_domain = normalize_host(domain)
             parsed_rules.append(
                 DomainRule(
-                    name=rule_name(f"domain {normalized_domain}", pathname_filter),
+                    name=rule_name(f"domain {normalized_domain}", pathname_filters),
                     domain=normalized_domain,
                     include_subdomains=include_subdomains,
                     methods=methods,
-                    pathname_filter=pathname_filter,
+                    pathname_filters=pathname_filters,
                     inject_headers=inject_headers,
                 )
             )
@@ -478,10 +491,10 @@ def parse_rules_file(path: Path) -> list[Rule]:
                 ) from exc
             parsed_rules.append(
                 RegexRule(
-                    name=rule_name(f"domain_regex {domain_regex!r}", pathname_filter),
+                    name=rule_name(f"domain_regex {domain_regex!r}", pathname_filters),
                     pattern=pattern,
                     methods=methods,
-                    pathname_filter=pathname_filter,
+                    pathname_filters=pathname_filters,
                     inject_headers=inject_headers,
                 )
             )
@@ -509,12 +522,13 @@ def describe_rule(index: int, rule: Rule) -> str:
             f"methods={methods}",
         ]
 
-    if rule.pathname_filter is not None:
-        pathname_filter = rule.pathname_filter
-        parts.append(f"{pathname_filter.kind}={pathname_filter.source!r}")
-        if pathname_filter.kind == "pathname_pattern":
-            compiled_regexes = [p.pattern for p in pathname_filter.patterns]
-            parts.append(f"compiled_regex={compiled_regexes!r}")
+    if rule.pathname_filters:
+        for pathname_filter in rule.pathname_filters:
+            parts.append(f"{pathname_filter.kind}={pathname_filter.source!r}")
+            if pathname_filter.kind == "pathname_pattern":
+                parts.append(
+                    f"compiled_regex={pathname_filter.pattern.pattern!r}"
+                )
 
     if rule.inject_headers:
         header_names = [header.name for header in rule.inject_headers]

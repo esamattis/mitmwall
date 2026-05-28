@@ -123,8 +123,10 @@ methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD
 
 pathname_pattern = "/api/:ver/upload"  # URL pathname filter (optional).
                                            # Matches only the path, not ?query or #fragment.
+                                           # May be a single string or an array of patterns.
 pathname_regex = '^/files/.*$'             # Python regex pathname filter (optional).
                                            # Also matched only against the path.
+                                           # May be a single string or an array of patterns.
 
 # Add or replace upstream request headers.
 inject_headers = [
@@ -141,7 +143,8 @@ methods = "ANY"
 
 - Each `[[allow]]` must have exactly one of `domain` or `domain_regex`.
 - `include_subdomains` is only valid with `domain`.
-- At most one of `pathname_pattern` or `pathname_regex` per rule.
+- `pathname_regex` and `pathname_pattern` may both be set; a request matches
+  if it satisfies any of the configured pathname filters.
 - `inject_headers` must be a non-empty list of `{ name = "Header-Name", value = "..." }` tables.
 - Unknown keys are rejected.
 

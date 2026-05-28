@@ -14,7 +14,9 @@
 #   { name = "X-Trace-Id", value = "example" },
 # ]
 # pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
+#                                         # May be a single string or an array of patterns.
 # pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
+#                                         # May be a single string or an array of patterns.
 #
 # [[allow]]
 # domain_regex = '(^|\.)example\.(com|org)$'  # Python regex for hostname (required*).
@@ -24,7 +26,8 @@
 #
 # * Each [[allow]] must have exactly one of `domain` or `domain_regex`.
 # * `include_subdomains` is only valid with `domain`.
-# * At most one of `pathname_pattern` or `pathname_regex` per rule.
+# * `pathname_regex` and `pathname_pattern` may both be set; a request matches
+#   if it satisfies any of the configured pathname filters.
 # * `inject_headers` must be a non-empty list of
 #   { name = "Header-Name", value = "..." } tables.
 #   Matching rules add or replace those request headers before the upstream request.
