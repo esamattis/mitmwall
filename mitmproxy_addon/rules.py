@@ -2,6 +2,7 @@
 Allow rule parsing and matching for the mitmwall addon.
 """
 
+import ipaddress
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -11,7 +12,13 @@ from urllib.parse import urlsplit
 
 import tomllib
 
-from .constants import ALLOW_RULE_KEYS, ANY_METHOD, DEFAULT_ALLOWED_METHODS, RULES_DIR
+from .constants import (
+    ALLOW_RULE_KEYS,
+    ALLOW_TCP_RULE_KEYS,
+    ANY_METHOD,
+    DEFAULT_ALLOWED_METHODS,
+    RULES_DIR,
+)
 from .pathname_pattern import compile_pathname_pattern
 
 HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.\^_`|~0-9A-Za-z]+$")
@@ -108,6 +115,37 @@ class DomainRule:
         return not self.pathname_filters or any(
             f.matches(pathname) for f in self.pathname_filters
         )
+
+
+@dataclass(frozen=True)
+class AllowTCPRule:
+    """
+    Allow rule that permits direct TCP connections to a host and port.
+    """
+
+    name: str
+    host: str
+    port: int
+
+    def is_ip_address(self) -> bool:
+        """
+        Return whether the host is an IP address rather than a hostname.
+        """
+
+        try:
+            _ = ipaddress.ip_address(self.host)
+            return True
+        except ValueError:
+            return False
+
+    def matches(self, host: str, port: int) -> bool:
+        """
+        Return whether this rule allows the given host and port.
+        """
+
+        if self.port != port:
+            return False
+        return normalize_host(host) == normalize_host(self.host)
 
 
 def normalize_host(host: str) -> str:
@@ -401,7 +439,32 @@ def parse_domain_regex_value(
     return tuple(patterns)
 
 
-def parse_rules_file(path: Path) -> list[DomainRule]:
+def parse_allow_tcp_rule(rule: dict[str, object], index: int) -> AllowTCPRule:
+    """
+    Parse a single [[allow_tcp]] rule table.
+    """
+
+    validate_allowed_keys(rule, ALLOW_TCP_RULE_KEYS, index)
+
+    host_value = rule.get("host")
+    if not isinstance(host_value, str) or not host_value.strip():
+        raise ValueError(f"allow_tcp rule #{index}: 'host' must be a non-empty string")
+    host = host_value.strip()
+
+    port_value = rule.get("port")
+    if not isinstance(port_value, int) or port_value < 1 or port_value > 65535:
+        raise ValueError(
+            f"allow_tcp rule #{index}: 'port' must be an integer between 1 and 65535"
+        )
+
+    return AllowTCPRule(
+        name=f"tcp {host}:{port_value}",
+        host=host,
+        port=port_value,
+    )
+
+
+def parse_rules_file(path: Path) -> tuple[list[DomainRule], list[AllowTCPRule]]:
     """
     Load and validate allow rules from a single TOML file.
     """
@@ -412,7 +475,7 @@ def parse_rules_file(path: Path) -> list[DomainRule]:
     if not is_toml_table(config_value):
         raise ValueError("top-level TOML value must be a table")
 
-    extra_top_level_keys = set(config_value) - {"allow"}
+    extra_top_level_keys = set(config_value) - {"allow", "allow_tcp"}
     if extra_top_level_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_top_level_keys))
         raise ValueError(f"unsupported top-level key(s): {keys}")
@@ -420,6 +483,10 @@ def parse_rules_file(path: Path) -> list[DomainRule]:
     allow_rules_value = config_value.get("allow", [])
     if not is_toml_array(allow_rules_value):
         raise ValueError("'allow' must be a list of tables")
+
+    allow_tcp_rules_value = config_value.get("allow_tcp", [])
+    if not is_toml_array(allow_tcp_rules_value):
+        raise ValueError("'allow_tcp' must be a list of tables")
 
     parsed_rules: list[DomainRule] = []
     for index, rule in enumerate(allow_rules_value, start=1):
@@ -498,7 +565,13 @@ def parse_rules_file(path: Path) -> list[DomainRule]:
                 )
             )
 
-    return parsed_rules
+    parsed_tcp_rules: list[AllowTCPRule] = []
+    for index, rule in enumerate(allow_tcp_rules_value, start=1):
+        if not is_toml_table(rule):
+            raise ValueError(f"allow_tcp rule #{index}: rule must be a table")
+        parsed_tcp_rules.append(parse_allow_tcp_rule(rule, index))
+
+    return parsed_rules, parsed_tcp_rules
 
 
 def describe_rule(index: int, rule: DomainRule) -> str:
@@ -537,7 +610,15 @@ def describe_rule(index: int, rule: DomainRule) -> str:
     return " ".join(parts)
 
 
-def load_rules(path: Path = RULES_DIR) -> list[DomainRule]:
+def describe_tcp_rule(index: int, rule: AllowTCPRule) -> str:
+    """
+    Return a log-friendly description of a parsed allow_tcp rule.
+    """
+
+    return f"allow_tcp rule #{index}: host={rule.host!r} port={rule.port}"
+
+
+def load_rules(path: Path = RULES_DIR) -> tuple[list[DomainRule], list[AllowTCPRule]]:
     """
     Load all TOML allow rules from a directory in alphabetical filename order.
     """
@@ -548,6 +629,7 @@ def load_rules(path: Path = RULES_DIR) -> list[DomainRule]:
         raise NotADirectoryError(f"rules path is not a directory: {path}")
 
     parsed_rules: list[DomainRule] = []
+    parsed_tcp_rules: list[AllowTCPRule] = []
     rule_files = sorted(
         (
             child
@@ -560,8 +642,10 @@ def load_rules(path: Path = RULES_DIR) -> list[DomainRule]:
     )
     for rule_file in rule_files:
         try:
-            parsed_rules.extend(parse_rules_file(rule_file))
+            rules, tcp_rules = parse_rules_file(rule_file)
+            parsed_rules.extend(rules)
+            parsed_tcp_rules.extend(tcp_rules)
         except Exception as exc:
             raise ValueError(f"failed to load {rule_file}: {exc}") from exc
 
-    return parsed_rules
+    return parsed_rules, parsed_tcp_rules

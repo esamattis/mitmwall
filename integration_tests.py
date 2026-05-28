@@ -453,12 +453,27 @@ class MitmwallNetworkTests(unittest.TestCase):
             method="POST",
         )
 
-    def test_tcp_connection_to_github_ssh_is_allowed(self) -> None:
+    def test_tcp_connection_to_towel_blinkenlights_is_allowed(self) -> None:
         """
-        Verify that non-HTTP TCP connections are passed through without rules.
+        Verify that TCP connections matching allow_tcp rules are allowed.
         """
 
-        self.assert_tcp_allowed("TCP connection to github.com SSH", "github.com", 22)
+        self.assert_tcp_allowed(
+            "TCP connection to towel.blinkenlights.nl telnet",
+            "towel.blinkenlights.nl",
+            23,
+        )
+
+    def test_tcp_connection_to_gitlab_ssh_is_blocked(self) -> None:
+        """
+        Verify that TCP connections to gitlab.com:22 are blocked without allow_tcp rule.
+        """
+
+        self.assert_tcp_blocked(
+            "TCP connection to gitlab.com SSH without allow_tcp rule",
+            "gitlab.com",
+            22,
+        )
 
     def test_direct_dns_queries_to_public_resolver_are_proxied(self) -> None:
         """

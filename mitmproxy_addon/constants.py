@@ -30,3 +30,7 @@ ALLOW_RULE_KEYS = {
     "pathname_regex",
     "pathname_pattern",
 }
+ALLOW_TCP_RULE_KEYS = {
+    "host",
+    "port",
+}

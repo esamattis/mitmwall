@@ -161,7 +161,7 @@ class FakeDNSFlow(DNSFlowLike):
     """
 
     request: DNSRequestLike
-    response: object | None
+    response: object
 
     def __init__(self, name: str | None) -> None:
         """
@@ -195,6 +195,7 @@ class FakeTCPFlow(TCPFlowLike):
     """
 
     server_conn: ServerConnLike
+    killed: bool
 
     def __init__(self, address: tuple[str, int] | None) -> None:
         """
@@ -202,6 +203,14 @@ class FakeTCPFlow(TCPFlowLike):
         """
 
         self.server_conn = FakeServerConn(address)
+        self.killed = False
+
+    def kill(self) -> None:
+        """
+        Record that the addon blocked this TCP flow.
+        """
+
+        self.killed = True
 
 
 class RuleParsingTests(unittest.TestCase):
@@ -305,7 +314,7 @@ inject_headers = [
                 encoding="utf-8",
             )
 
-            rules = load_rules(rules_dir)
+            rules, _tcp_rules = load_rules(rules_dir)
 
         self.assertEqual(
             [rule.domain for rule in rules],
@@ -328,7 +337,7 @@ inject_headers = [
                 encoding="utf-8",
             )
 
-            rules = load_rules(rules_dir)
+            rules, _tcp_rules = load_rules(rules_dir)
 
         self.assertEqual(
             [rule.domain for rule in rules],
@@ -594,7 +603,7 @@ domain_regex = ['^example\\.com$', '[invalid']
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "rules.toml"
             _ = path.write_text(content, encoding="utf-8")
-            rules = parse_rules_file(path)
+            rules, _tcp_rules = parse_rules_file(path)
 
         self.assertEqual(len(rules), 1)
         return rules[0]

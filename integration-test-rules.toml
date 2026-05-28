@@ -5,9 +5,6 @@
 domain = "github.com"
 
 [[allow]]
-domain = "towel.blinkenlights.nl"
-
-[[allow]]
 domain_regex = '.+\.ntp\.ubuntu\.com'
 
 [[allow]]
@@ -101,3 +98,8 @@ methods = "ANY"
 [[allow]]
 domain = "cdn.agentclientprotocol.com"
 pathname_pattern = "/registry/v1/latest/registry.json"
+
+## TCP rules
+[[allow_tcp]]
+host = "towel.blinkenlights.nl"
+port = 23

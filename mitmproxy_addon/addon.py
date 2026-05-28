@@ -5,7 +5,7 @@ mitmproxy addon runtime for mitmwall allowlist enforcement.
 import socket
 from collections.abc import Iterable, Sequence
 from importlib import import_module
-from typing import Callable, Protocol, cast
+from typing import Callable, Protocol, TypeGuard, cast
 
 from .addon_config import AddonConfig
 from .addon_logging import LOGGER, setup_logging
@@ -17,9 +17,11 @@ from .constants import (
     RULES_DIR,
 )
 from .rules import (
+    AllowTCPRule,
     DomainRule,
     MatchResult,
     describe_rule,
+    describe_tcp_rule,
     load_rules,
     normalize_host,
     normalize_method,
@@ -240,6 +242,33 @@ class DNSQuestionLike(Protocol):
     name: str
 
 
+class DNSResourceRecordLike(Protocol):
+    """
+    Subset of mitmproxy DNS resource record attributes used by the addon.
+    """
+
+    ipv4_address: str | None
+    ipv6_address: str | None
+
+
+class DNSResponseLike(Protocol):
+    """
+    Subset of mitmproxy DNS response attributes used by the addon.
+    """
+
+    answers: list[DNSResourceRecordLike]
+
+
+def is_dns_response_like(value: object) -> TypeGuard[DNSResponseLike]:
+    """
+    Return whether a value is a DNSResponseLike object.
+    """
+
+    return hasattr(value, "answers") and isinstance(
+        getattr(value, "answers", None), list
+    )
+
+
 class DNSRequestLike(Protocol):
     """
     Subset of mitmproxy DNS request behavior used by the addon.
@@ -261,7 +290,7 @@ class DNSFlowLike(Protocol):
     """
 
     request: DNSRequestLike
-    response: object | None
+    response: object
 
 
 class ServerConnLike(Protocol):
@@ -270,6 +299,14 @@ class ServerConnLike(Protocol):
     """
 
     address: tuple[str, int] | None
+
+
+class ServerConnectionHookDataLike(Protocol):
+    """
+    Subset of mitmproxy server connection hook data used by the addon.
+    """
+
+    server: ServerConnLike
 
 
 class TCPFlowLike(Protocol):
@@ -291,7 +328,10 @@ class Mitmwall:
         """
 
         self.rules: list[DomainRule] = []
+        self.tcp_rules: list[AllowTCPRule] = []
         self.rule_descriptions: tuple[str, ...] = ()
+        self.tcp_rule_descriptions: tuple[str, ...] = ()
+        self.resolved_ips: dict[str, set[str]] = {}
         self.block_dns: bool = DEFAULT_BLOCK_DNS
         self.flow_history_clear_interval: int = DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL
         self.flow_history_keep_entries: int = DEFAULT_FLOW_HISTORY_KEEP_ENTRIES
@@ -379,24 +419,38 @@ class Mitmwall:
         """
 
         try:
-            rules = load_rules()
+            rules, tcp_rules = load_rules()
         except Exception as exc:
             self.rules = []
+            self.tcp_rules = []
             self.rule_descriptions = ()
+            self.tcp_rule_descriptions = ()
             LOGGER.error(f"failed to load {RULES_DIR}: {exc}")
             return
 
         rule_descriptions = tuple(
             describe_rule(index, rule) for index, rule in enumerate(rules, start=1)
         )
+        tcp_rule_descriptions = tuple(
+            describe_tcp_rule(index, rule)
+            for index, rule in enumerate(tcp_rules, start=1)
+        )
         self.rules = rules
+        self.tcp_rules = tcp_rules
 
-        if rule_descriptions == self.rule_descriptions:
+        if (
+            rule_descriptions == self.rule_descriptions
+            and tcp_rule_descriptions == self.tcp_rule_descriptions
+        ):
             return
 
         self.rule_descriptions = rule_descriptions
+        self.tcp_rule_descriptions = tcp_rule_descriptions
         LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_DIR}")
         for description in self.rule_descriptions:
+            LOGGER.info(description)
+        LOGGER.info(f"loaded {len(self.tcp_rules)} allow_tcp rule(s) from {RULES_DIR}")
+        for description in self.tcp_rule_descriptions:
             LOGGER.info(description)
 
     def request(self, flow: FlowLike) -> None:
@@ -471,25 +525,98 @@ class Mitmwall:
                 )
                 return
 
+            if self.is_tcp_dns_allowed(host):
+                LOGGER.debug(f"allowed DNS host={host} for allow_tcp rule")
+                return
+
             flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
             LOGGER.warning(f"blocked DNS host={host}; no allow rule matched")
         finally:
             self.record_request_for_flow_history_clear()
 
+    def dns_response(self, flow: DNSFlowLike) -> None:
+        """
+        Store resolved IP addresses from DNS responses for allow_tcp hostname tracking.
+        """
+
+        question = flow.request.question
+        if question is None:
+            return
+
+        host = question.name
+        if not self.is_tcp_dns_allowed(host):
+            return
+
+        response = flow.response
+        if response is None:
+            return
+
+        if not is_dns_response_like(response):
+            return
+
+        normalized_host = normalize_host(host)
+        resolved_ips: set[str] = set()
+        for answer in response.answers:
+            try:
+                if answer.ipv4_address is not None:
+                    resolved_ips.add(str(answer.ipv4_address))
+            except ValueError:
+                pass
+            try:
+                if answer.ipv6_address is not None:
+                    resolved_ips.add(str(answer.ipv6_address))
+            except ValueError:
+                pass
+
+        if resolved_ips:
+            if normalized_host not in self.resolved_ips:
+                self.resolved_ips[normalized_host] = set()
+            self.resolved_ips[normalized_host].update(resolved_ips)
+            LOGGER.debug(
+                f"stored resolved IPs for {host}: {sorted(resolved_ips)}"
+            )
+
+    def server_connect(self, data: ServerConnectionHookDataLike) -> None:
+        """
+        Log server connection attempts before mitmproxy opens the upstream socket.
+        """
+
+        address = data.server.address
+        if address is not None:
+            host, port = address
+            LOGGER.debug(f"server connection host={host} port={port}")
+
     def tcp_start(self, flow: TCPFlowLike) -> None:
         """
-        Log non-HTTP TCP connections without applying any allow rules.
-
-        All non-HTTP TCP traffic is passed through transparently. This hook
-        records the destination for observability in the mitmproxy log.
+        Allow TCP connections that match allow_tcp rules and kill all others.
         """
 
         address = flow.server_conn.address
-        if address is not None:
-            host, port = address
-            LOGGER.info(f"tcp connection host={host} port={port}")
-        else:
+        if address is None:
             LOGGER.info("tcp connection with unknown destination")
+            return
+
+        host, port = address
+        LOGGER.info(f"tcp connection host={host} port={port}")
+
+        if self.is_allow_all_traffic():
+            LOGGER.debug("allowed TCP connection because allow_all_traffic is enabled")
+            return
+
+        if self.is_tcp_allowed(host, port):
+            LOGGER.debug(f"allowed TCP connection host={host} port={port}")
+            return
+
+        kill_method = getattr(flow, "kill", None)
+        if callable(kill_method):
+            _ = kill_method()
+            LOGGER.warning(
+                f"blocked TCP connection host={host} port={port}; no allow_tcp rule matched"
+            )
+        else:
+            LOGGER.warning(
+                f"would block TCP connection host={host} port={port} but flow.kill() not available"
+            )
 
     def is_dns_allowed(self, host: str) -> MatchResult:
         """
@@ -501,6 +628,38 @@ class Mitmwall:
             if rule.matches_host(normalized_host):
                 return MatchResult(allowed=True, rule_name=rule.name)
         return MatchResult(allowed=False)
+
+    def is_tcp_dns_allowed(self, host: str) -> bool:
+        """
+        Return whether any allow_tcp rule has a hostname matching the DNS query.
+        """
+
+        normalized_host = normalize_host(host)
+        for rule in self.tcp_rules:
+            if not rule.is_ip_address():
+                if normalize_host(rule.host) == normalized_host:
+                    return True
+        return False
+
+    def is_tcp_allowed(self, host: str, port: int) -> bool:
+        """
+        Return whether any allow_tcp rule allows the TCP connection.
+        """
+
+        for rule in self.tcp_rules:
+            if rule.port != port:
+                continue
+            if rule.is_ip_address():
+                if rule.host == host:
+                    return True
+            else:
+                normalized_rule_host = normalize_host(rule.host)
+                if normalize_host(host) == normalized_rule_host:
+                    return True
+                resolved_ips = self.resolved_ips.get(normalized_rule_host, set())
+                if host in resolved_ips:
+                    return True
+        return False
 
     def is_local_hostname(self, host: str) -> bool:
         """
