@@ -11,6 +11,7 @@ import tomllib
 from .constants import (
     ADDON_CONFIG_FILE,
     DEFAULT_BLOCK_DNS,
+    DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
     DEFAULT_LOG_LEVEL_NAME,
     LOG_LEVELS,
 )
@@ -25,6 +26,7 @@ class AddonConfig:
     log_level_name: str
     log_level: int
     block_dns: bool
+    flow_history_clear_interval: int
 
 
 def default_addon_config() -> AddonConfig:
@@ -36,6 +38,7 @@ def default_addon_config() -> AddonConfig:
         log_level_name=DEFAULT_LOG_LEVEL_NAME,
         log_level=LOG_LEVELS[DEFAULT_LOG_LEVEL_NAME],
         block_dns=DEFAULT_BLOCK_DNS,
+        flow_history_clear_interval=DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
     )
 
 
@@ -66,6 +69,17 @@ def parse_block_dns(value: object) -> bool:
     return value
 
 
+def parse_flow_history_clear_interval(value: object) -> int:
+    """
+    Parse and validate the request interval for clearing mitmproxy flow history.
+    """
+
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError("'flow_history_clear_interval' must be a positive integer")
+
+    return value
+
+
 def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
     """
     Return whether a TOML value is a table.
@@ -82,7 +96,11 @@ def parse_addon_config(config_value: object) -> AddonConfig:
     if not is_toml_table(config_value):
         raise ValueError("top-level TOML value must be a table")
 
-    extra_top_level_keys = set(config_value) - {"block_dns", "log_level"}
+    extra_top_level_keys = set(config_value) - {
+        "block_dns",
+        "flow_history_clear_interval",
+        "log_level",
+    }
     if extra_top_level_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_top_level_keys))
         raise ValueError(f"unsupported top-level key(s): {keys}")
@@ -91,10 +109,17 @@ def parse_addon_config(config_value: object) -> AddonConfig:
         config_value.get("log_level", DEFAULT_LOG_LEVEL_NAME)
     )
     block_dns = parse_block_dns(config_value.get("block_dns", DEFAULT_BLOCK_DNS))
+    flow_history_clear_interval = parse_flow_history_clear_interval(
+        config_value.get(
+            "flow_history_clear_interval",
+            DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
+        )
+    )
     return AddonConfig(
         log_level_name=log_level_name,
         log_level=log_level,
         block_dns=block_dns,
+        flow_history_clear_interval=flow_history_clear_interval,
     )
 
 

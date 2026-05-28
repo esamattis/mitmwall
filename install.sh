@@ -128,6 +128,10 @@ log_level = "info"
 # pass through all DNS queries while keeping the firewall redirection rules.
 # The default is true.
 block_dns = true
+
+# Clear mitmproxy's in-memory flow history after this many HTTP requests.
+# The default is 1000.
+flow_history_clear_interval = 1000
 EOF
 fi
 chown root:"$user_group" "$addon_config_file"

@@ -511,5 +511,70 @@ class HeaderInjectionAddonTests(unittest.TestCase):
         self.assertEqual(flow.request.headers["X-Mitmwall-Test"], "enabled")
 
 
+@final
+class FakeFlowHistoryClearer:
+    """
+    Callable test double that records flow history clear calls.
+    """
+
+    calls: int
+
+    def __init__(self) -> None:
+        """
+        Initialize the clear call counter.
+        """
+
+        self.calls = 0
+
+    def __call__(self) -> None:
+        """
+        Record a flow history clear request.
+        """
+
+        self.calls += 1
+
+
+class FlowHistoryAddonTests(unittest.TestCase):
+    """
+    Verify addon-driven mitmproxy flow history cleanup.
+    """
+
+    def test_request_clears_flow_history_at_configured_interval(self) -> None:
+        """
+        Clear mitmproxy flow history after the configured number of requests.
+        """
+
+        addon = Mitmwall()
+        addon.flow_history_clear_interval = 2
+        flow_history_clearer = FakeFlowHistoryClearer()
+        addon.flow_history_clearer = flow_history_clearer
+        flow = FakeFlow(FakeRequest("pie.dev", "GET", "https://pie.dev/"))
+
+        addon.request(flow)
+        addon.request(flow)
+        addon.request(flow)
+
+        self.assertEqual(flow_history_clearer.calls, 1)
+        self.assertEqual(addon.requests_since_flow_history_clear, 1)
+
+    def test_dns_request_clears_flow_history_at_configured_interval(self) -> None:
+        """
+        Count DNS requests toward the configured flow history clear interval.
+        """
+
+        addon = Mitmwall()
+        addon.flow_history_clear_interval = 2
+        flow_history_clearer = FakeFlowHistoryClearer()
+        addon.flow_history_clearer = flow_history_clearer
+        flow = FakeDNSFlow("blocked.example")
+
+        addon.dns_request(flow)
+        addon.dns_request(flow)
+        addon.dns_request(flow)
+
+        self.assertEqual(flow_history_clearer.calls, 1)
+        self.assertEqual(addon.requests_since_flow_history_clear, 1)
+
+
 if __name__ == "__main__":
     _test_program = unittest.main(verbosity=2)

@@ -3,11 +3,12 @@ mitmproxy addon runtime for mitmwall allowlist enforcement.
 """
 
 import socket
-from typing import Protocol
+from importlib import import_module
+from typing import Callable, Protocol, cast
 
 from .addon_config import AddonConfig
 from .addon_logging import LOGGER, setup_logging
-from .constants import DEFAULT_BLOCK_DNS, RULES_DIR
+from .constants import DEFAULT_BLOCK_DNS, DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL, RULES_DIR
 from .rules import (
     MatchResult,
     Rule,
@@ -19,6 +20,44 @@ from .rules import (
 )
 
 DNS_RESPONSE_CODE_REFUSED = 5
+
+
+class MitmproxyCommandCallerLike(Protocol):
+    """
+    Subset of mitmproxy's command manager used by the addon.
+    """
+
+    def call(self, command_name: str, *args: object) -> object:
+        """
+        Execute a mitmproxy command by name.
+        """
+
+        ...
+
+
+class MitmproxyMasterLike(Protocol):
+    """
+    Subset of mitmproxy's master object used by the addon.
+    """
+
+    commands: MitmproxyCommandCallerLike
+
+
+class MitmproxyContextLike(Protocol):
+    """
+    Subset of mitmproxy.ctx used by the addon.
+    """
+
+    master: MitmproxyMasterLike
+
+
+def clear_mitmproxy_flow_history() -> None:
+    """
+    Clear mitmproxy's in-memory flow history using the built-in view command.
+    """
+
+    ctx = cast(MitmproxyContextLike, cast(object, import_module("mitmproxy.ctx")))
+    _result = ctx.master.commands.call("view.clear")
 
 
 class HeadersLike(Protocol):
@@ -113,6 +152,9 @@ class Mitmwall:
         self.rules: list[Rule] = []
         self.rule_descriptions: tuple[str, ...] = ()
         self.block_dns: bool = DEFAULT_BLOCK_DNS
+        self.flow_history_clear_interval: int = DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL
+        self.requests_since_flow_history_clear: int = 0
+        self.flow_history_clearer: Callable[[], None] = clear_mitmproxy_flow_history
         self.local_hostname: str = normalize_host(socket.gethostname())
 
     def load(self, _loader: object) -> None:
@@ -145,9 +187,35 @@ class Mitmwall:
         """
 
         previous_block_dns = self.block_dns
+        previous_flow_history_clear_interval = self.flow_history_clear_interval
         self.block_dns = addon_config.block_dns
+        self.flow_history_clear_interval = addon_config.flow_history_clear_interval
         if self.block_dns != previous_block_dns:
             LOGGER.info(f"DNS filtering {'enabled' if self.block_dns else 'disabled'}")
+        if self.flow_history_clear_interval != previous_flow_history_clear_interval:
+            self.requests_since_flow_history_clear = 0
+            LOGGER.info(
+                "flow history will be cleared every "
+                + f"{self.flow_history_clear_interval} request(s)"
+            )
+
+    def record_request_for_flow_history_clear(self) -> None:
+        """
+        Count a proxied request and clear mitmproxy flow history at the interval.
+        """
+
+        self.requests_since_flow_history_clear += 1
+        if self.requests_since_flow_history_clear < self.flow_history_clear_interval:
+            return
+
+        self.requests_since_flow_history_clear = 0
+        try:
+            self.flow_history_clearer()
+        except Exception as exc:
+            LOGGER.error(f"failed to clear mitmproxy flow history: {exc}")
+            return
+
+        LOGGER.info("cleared mitmproxy flow history")
 
     def reload_rules(self) -> None:
         """
@@ -203,40 +271,44 @@ class Mitmwall:
                 LOGGER.debug(
                     f"allowed host={host} method={method} rule={result.rule_name}"
                 )
-            return
+        else:
+            flow.kill()
+            LOGGER.warning(
+                f"blocked host={host} method={method} url={url}; no allow rule matched"
+            )
 
-        flow.kill()
-        LOGGER.warning(
-            f"blocked host={host} method={method} url={url}; no allow rule matched"
-        )
+        self.record_request_for_flow_history_clear()
 
     def dns_request(self, flow: DNSFlowLike) -> None:
         """
         Forward DNS queries for allowed domains and refuse all other names.
         """
 
-        if not self.block_dns:
-            LOGGER.debug("allowed DNS request because block_dns is disabled")
-            return
-        question = flow.request.question
-        if question is None:
+        try:
+            if not self.block_dns:
+                LOGGER.debug("allowed DNS request because block_dns is disabled")
+                return
+            question = flow.request.question
+            if question is None:
+                flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
+                LOGGER.warning("blocked DNS request without a question")
+                return
+
+            host = question.name
+            LOGGER.debug(f"dns request host={host}")
+            result = self.is_dns_allowed(host)
+            if result.allowed:
+                LOGGER.debug(f"allowed DNS host={host} rule={result.rule_name}")
+                return
+
+            if self.is_local_hostname(host):
+                LOGGER.debug(f"allowed DNS host={host} because it is the local hostname")
+                return
+
             flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
-            LOGGER.warning("blocked DNS request without a question")
-            return
-
-        host = question.name
-        LOGGER.debug(f"dns request host={host}")
-        result = self.is_dns_allowed(host)
-        if result.allowed:
-            LOGGER.debug(f"allowed DNS host={host} rule={result.rule_name}")
-            return
-
-        if self.is_local_hostname(host):
-            LOGGER.debug(f"allowed DNS host={host} because it is the local hostname")
-            return
-
-        flow.response = flow.request.fail(DNS_RESPONSE_CODE_REFUSED)
-        LOGGER.warning(f"blocked DNS host={host}; no allow rule matched")
+            LOGGER.warning(f"blocked DNS host={host}; no allow rule matched")
+        finally:
+            self.record_request_for_flow_history_clear()
 
     def is_dns_allowed(self, host: str) -> MatchResult:
         """

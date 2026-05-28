@@ -9,6 +9,7 @@ RULES_DIR = Path("/etc/mitmwall/rules.d")
 ADDON_CONFIG_FILE = Path("/etc/mitmwall/config.toml")
 DEFAULT_LOG_LEVEL_NAME = "info"
 DEFAULT_BLOCK_DNS = True
+DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL = 1000
 LOG_LEVELS = {
     "debug": logging.DEBUG,
     "info": logging.INFO,
