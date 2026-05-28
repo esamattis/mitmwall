@@ -152,6 +152,27 @@ def is_toml_array(value: object) -> TypeGuard[Sequence[object]]:
     return isinstance(value, list)
 
 
+def get_toml_array(raw_value: object, key: str, index: int) -> list[str]:
+    """
+    Normalize a TOML string or array-of-strings value into a list of strings.
+    """
+
+    if isinstance(raw_value, str):
+        return [raw_value]
+    if is_toml_array(raw_value) and raw_value:
+        items: list[str] = []
+        for item_index, item in enumerate(raw_value, start=1):
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"allow rule #{index}: {key} item #{item_index} must be a non-empty string"
+                )
+            items.append(item)
+        return items
+    raise ValueError(
+        f"allow rule #{index}: {key!r} must be a non-empty string or a non-empty list"
+    )
+
+
 def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
     """
     Return whether a TOML value is a table.
@@ -195,20 +216,7 @@ def parse_pathname_filter_value(
     Parse a pathname_regex or pathname_pattern value into a list of PathnameFilters.
     """
 
-    if isinstance(raw_value, str):
-        items_list: list[str] = [raw_value]
-    elif is_toml_array(raw_value) and raw_value:
-        items_list = []
-        for item_index, item in enumerate(raw_value, start=1):
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    f"allow rule #{index}: {key} item #{item_index} must be a non-empty string"
-                )
-            items_list.append(item)
-    else:
-        raise ValueError(
-            f"allow rule #{index}: {key!r} must be a non-empty string or a non-empty list"
-        )
+    items_list = get_toml_array(raw_value, key, index)
 
     filters: list[PathnameFilter] = []
     for item in items_list:
@@ -367,20 +375,7 @@ def parse_domain_value(
     """
 
     raw_value = rule.get("domain")
-    if isinstance(raw_value, str):
-        items: list[str] = [raw_value]
-    elif is_toml_array(raw_value) and raw_value:
-        items = []
-        for item_index, item in enumerate(raw_value, start=1):
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    f"allow rule #{index}: domain item #{item_index} must be a non-empty string"
-                )
-            items.append(item)
-    else:
-        raise ValueError(
-            f"allow rule #{index}: 'domain' must be a non-empty string or a non-empty list"
-        )
+    items = get_toml_array(raw_value, "domain", index)
 
     return tuple(normalize_host(item) for item in items)
 
@@ -393,20 +388,7 @@ def parse_domain_regex_value(
     """
 
     raw_value = rule.get("domain_regex")
-    if isinstance(raw_value, str):
-        items: list[str] = [raw_value]
-    elif is_toml_array(raw_value) and raw_value:
-        items = []
-        for item_index, item in enumerate(raw_value, start=1):
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    f"allow rule #{index}: domain_regex item #{item_index} must be a non-empty string"
-                )
-            items.append(item)
-    else:
-        raise ValueError(
-            f"allow rule #{index}: 'domain_regex' must be a non-empty string or a non-empty list"
-        )
+    items = get_toml_array(raw_value, "domain_regex", index)
 
     patterns: list[re.Pattern[str]] = []
     for item in items:
