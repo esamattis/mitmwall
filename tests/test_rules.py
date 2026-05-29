@@ -4,11 +4,13 @@ Unit tests for allow-rule parsing and request header injections.
 
 import re
 import tempfile
+import tomllib
 import unittest
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import final, override
+from typing import cast, final, override
 
+import mitmproxy_addon.addon as addon_module
 from mitmproxy_addon.addon import (
     DNSFlowLike,
     DNSQuestionLike,
@@ -27,6 +29,7 @@ from mitmproxy_addon.rules import (
     describe_rule,
     load_rules,
     parse_rules_file,
+    parse_rules_text,
 )
 
 
@@ -552,6 +555,43 @@ domain_regex = ['^example\\.com$', '[invalid']
 """.strip()
             )
 
+    def test_parse_rules_text_accepts_valid_rules(self) -> None:
+        """
+        Parse allow rules directly from a TOML string.
+        """
+
+        rules = parse_rules_text("""
+[[allow]]
+domain = "example.com"
+""")
+        self.assertEqual(len(rules), 1)
+        self.assertIsInstance(rules[0], DomainRule)
+        self.assertEqual(rules[0].domain, ("example.com",))
+
+    def test_parse_rules_text_rejects_invalid_toml(self) -> None:
+        """
+        Reject invalid TOML in a rules string.
+        """
+
+        with self.assertRaises(tomllib.TOMLDecodeError):
+            _ = parse_rules_text("not valid toml [")
+
+    def test_parse_rules_file_delegates_to_parse_rules_text(self) -> None:
+        """
+        Verify parse_rules_file returns the same rules as parse_rules_text.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "rules.toml"
+            _ = path.write_text(
+                '[[allow]]\ndomain = "file.example"\n',
+                encoding="utf-8",
+            )
+            rules = parse_rules_file(path)
+
+        self.assertEqual(len(rules), 1)
+        self.assertEqual(rules[0].domain, ("file.example",))
+
     def _parse_single_rule(self, content: str) -> DomainRule:
         """
         Parse one domain rule from temporary TOML content.
@@ -564,6 +604,171 @@ domain_regex = ['^example\\.com$', '[invalid']
 
         self.assertEqual(len(rules), 1)
         return rules[0]
+
+
+class DynamicRulesAddonTests(unittest.TestCase):
+    """
+    Verify addon behavior with dynamically configured rules.
+    """
+
+    def test_dynamic_rules_take_priority_over_disk_rules(self) -> None:
+        """
+        When both dynamic and disk rules match, the dynamic rule wins.
+        """
+
+        addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
+        addon.rules = [
+            DomainRule(
+                name="dynamic rule",
+                domain=("pie.dev",),
+                include_subdomains=False,
+                methods=("GET",),
+                inject_headers=(
+                    InjectedHeader(name="X-Dynamic", value="yes"),
+                ),
+            ),
+            DomainRule(
+                name="disk rule",
+                domain=("pie.dev",),
+                include_subdomains=False,
+                methods=("GET",),
+                inject_headers=(
+                    InjectedHeader(name="X-Disk", value="yes"),
+                ),
+            ),
+        ]
+        flow = FakeFlow(FakeRequest("pie.dev", "GET", "https://pie.dev/"))
+
+        addon.request(flow)
+
+        self.assertFalse(flow.killed)
+        self.assertEqual(flow.request.headers["X-Dynamic"], "yes")
+
+    def _patch_load_rules(self, rules: list[DomainRule]) -> Callable[[], None]:
+        """
+        Temporarily replace load_rules on the addon module and return restore.
+        """
+
+        original = cast(Callable[[], list[DomainRule]], getattr(addon_module, "load_rules"))
+        setattr(addon_module, "load_rules", lambda: rules)
+
+        def restore() -> None:
+            setattr(addon_module, "load_rules", original)
+
+        return restore
+
+    def test_reload_rules_loads_dynamic_rules(self) -> None:
+        """
+        reload_rules parses dynamic rules from the text option.
+        """
+
+        addon = Mitmwall()
+        addon.get_rules_text = lambda: '[[allow]]\ndomain = "dynamic.example"\n'
+        restore = self._patch_load_rules([
+            DomainRule(
+                name="domain disk.example",
+                domain=("disk.example",),
+                include_subdomains=False,
+                methods=("GET",),
+            ),
+        ])
+        try:
+            addon.reload_rules()
+        finally:
+            restore()
+
+        self.assertEqual(len(addon.rules), 2)
+        self.assertEqual(addon.rules[0].domain, ("dynamic.example",))
+        self.assertEqual(addon.rules[1].domain, ("disk.example",))
+
+    def test_reload_rules_clears_previous_dynamic_rules(self) -> None:
+        """
+        When dynamic rules text changes, old dynamic rules are replaced.
+        """
+
+        addon = Mitmwall()
+        addon.get_rules_text = lambda: '[[allow]]\ndomain = "first.example"\n'
+        restore = self._patch_load_rules([])
+        try:
+            addon.reload_rules()
+            self.assertEqual(len(addon.rules), 1)
+            self.assertEqual(addon.rules[0].domain, ("first.example",))
+
+            addon.get_rules_text = lambda: '[[allow]]\ndomain = "second.example"\n'
+            addon.reload_rules()
+            self.assertEqual(len(addon.rules), 1)
+            self.assertEqual(addon.rules[0].domain, ("second.example",))
+        finally:
+            restore()
+
+    def test_reload_rules_keeps_disk_rules_when_dynamic_text_is_invalid(
+        self,
+    ) -> None:
+        """
+        Invalid dynamic rules text logs an error and keeps disk rules.
+        """
+
+        addon = Mitmwall()
+        addon.get_rules_text = lambda: "invalid toml ["
+        restore = self._patch_load_rules([
+            DomainRule(
+                name="domain disk.example",
+                domain=("disk.example",),
+                include_subdomains=False,
+                methods=("GET",),
+            ),
+        ])
+        try:
+            addon.reload_rules()
+            self.assertEqual(len(addon.rules), 1)
+            self.assertEqual(addon.rules[0].domain, ("disk.example",))
+        finally:
+            restore()
+
+    def test_reload_rules_ignores_empty_dynamic_text(self) -> None:
+        """
+        An empty or None dynamic rules text is ignored.
+        """
+
+        addon = Mitmwall()
+        addon.get_rules_text = lambda: ""
+        restore = self._patch_load_rules([
+            DomainRule(
+                name="domain disk.example",
+                domain=("disk.example",),
+                include_subdomains=False,
+                methods=("GET",),
+            ),
+        ])
+        try:
+            addon.reload_rules()
+            self.assertEqual(len(addon.rules), 1)
+            self.assertEqual(addon.rules[0].domain, ("disk.example",))
+        finally:
+            restore()
+
+    def test_reload_rules_ignores_none_dynamic_text(self) -> None:
+        """
+        A None dynamic rules text is ignored.
+        """
+
+        addon = Mitmwall()
+        addon.get_rules_text = lambda: None
+        restore = self._patch_load_rules([
+            DomainRule(
+                name="domain disk.example",
+                domain=("disk.example",),
+                include_subdomains=False,
+                methods=("GET",),
+            ),
+        ])
+        try:
+            addon.reload_rules()
+            self.assertEqual(len(addon.rules), 1)
+            self.assertEqual(addon.rules[0].domain, ("disk.example",))
+        finally:
+            restore()
 
 
 class DNSAddonTests(unittest.TestCase):
@@ -579,6 +784,7 @@ class DNSAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.rules = [
             DomainRule(
                 name="domain pie.dev, pathname_pattern '/headers'",
@@ -608,6 +814,7 @@ class DNSAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.rules = [
             DomainRule(
                 name="domain_regex '^api[.]example[.]com$'",
@@ -628,6 +835,7 @@ class DNSAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.rules = [
             DomainRule(
                 name="domain_regex '^api[.]example[.]com$'",
@@ -648,6 +856,7 @@ class DNSAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.rules = [
             DomainRule(
                 name="domain pie.dev",
@@ -668,6 +877,7 @@ class DNSAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.local_hostname = "localbox"
         flow = FakeDNSFlow("LOCALBOX.")
 
@@ -681,6 +891,7 @@ class DNSAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.block_dns = False
         addon.rules = [
             DomainRule(
@@ -702,6 +913,7 @@ class DNSAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.block_dns = False
         flow = FakeDNSFlow(None)
 
@@ -721,6 +933,7 @@ class HeaderInjectionAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.rules = [
             DomainRule(
                 name="domain pie.dev",
@@ -841,6 +1054,7 @@ class FlowHistoryAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.flow_history_clear_interval = 2
         flow_history_clearer = FakeFlowHistoryClearer()
         addon.flow_history_clearer = flow_history_clearer
@@ -860,6 +1074,7 @@ class FlowHistoryAddonTests(unittest.TestCase):
         """
 
         addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
         addon.flow_history_clear_interval = 2
         flow_history_clearer = FakeFlowHistoryClearer()
         addon.flow_history_clearer = flow_history_clearer

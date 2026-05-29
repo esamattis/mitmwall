@@ -401,13 +401,12 @@ def parse_domain_regex_value(
     return tuple(patterns)
 
 
-def parse_rules_file(path: Path) -> list[DomainRule]:
+def parse_rules_text(text: str) -> list[DomainRule]:
     """
-    Load and validate allow rules from a single TOML file.
+    Load and validate allow rules from a TOML string.
     """
 
-    with path.open("rb") as file:
-        config_value = tomllib.load(file)
+    config_value = tomllib.loads(text)
 
     if not is_toml_table(config_value):
         raise ValueError("top-level TOML value must be a table")
@@ -499,6 +498,16 @@ def parse_rules_file(path: Path) -> list[DomainRule]:
             )
 
     return parsed_rules
+
+
+def parse_rules_file(path: Path) -> list[DomainRule]:
+    """
+    Load and validate allow rules from a single TOML file.
+    """
+
+    with path.open("rb") as file:
+        text = file.read().decode("utf-8")
+    return parse_rules_text(text)
 
 
 def describe_rule(index: int, rule: DomainRule) -> str:

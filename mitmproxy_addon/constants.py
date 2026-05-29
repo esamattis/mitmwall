@@ -12,6 +12,7 @@ DEFAULT_BLOCK_DNS = True
 DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL = 1000
 DEFAULT_FLOW_HISTORY_KEEP_ENTRIES = 500
 OPTION_ALLOW_ALL_TRAFFIC = "00_mitmwall_allow_all_traffic"
+OPTION_RULES_TEXT = "01_mitmwall_rules_text"
 LOG_LEVELS = {
     "debug": logging.DEBUG,
     "info": logging.INFO,

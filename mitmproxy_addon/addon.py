@@ -14,6 +14,7 @@ from .constants import (
     DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
     DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,
     OPTION_ALLOW_ALL_TRAFFIC,
+    OPTION_RULES_TEXT,
     RULES_DIR,
 )
 from .rules import (
@@ -23,6 +24,7 @@ from .rules import (
     load_rules,
     normalize_host,
     normalize_method,
+    parse_rules_text,
     request_pathname,
 )
 
@@ -176,13 +178,13 @@ def clear_mitmproxy_flow_history(keep_entries: int) -> int:
         return 0
 
 
-def get_allow_all_traffic_option() -> bool:
+def get_option(option_name: str) -> object:
     """
-    Return whether the allow_all_traffic mitmproxy option is enabled.
+    Return the current value of a mitmproxy option by name.
     """
 
     ctx = cast(MitmproxyContextLike, cast(object, import_module("mitmproxy.ctx")))
-    return cast(bool, getattr(ctx.options, OPTION_ALLOW_ALL_TRAFFIC))
+    return cast(object, getattr(ctx.options, option_name))
 
 
 class HeadersLike(Protocol):
@@ -281,7 +283,6 @@ class Mitmwall:
         self.flow_history_keep_entries: int = DEFAULT_FLOW_HISTORY_KEEP_ENTRIES
         self.requests_since_flow_history_clear: int = 0
         self.flow_history_clearer: Callable[[int], int] = clear_mitmproxy_flow_history
-        self.is_allow_all_traffic: Callable[[], bool] = lambda: False
         self.local_hostname: str = normalize_host(socket.gethostname())
 
     def load(self, loader: LoaderLike) -> None:
@@ -297,7 +298,12 @@ class Mitmwall:
             default=False,
             help="mitmwall: Temporarily allow all traffic regardless of allow rules",
         )
-        self.is_allow_all_traffic = get_allow_all_traffic_option
+        loader.add_option(
+            name=OPTION_RULES_TEXT,
+            typespec=Sequence[str],
+            default=(),
+            help="mitmwall: Additional allow rules in TOML format",
+        )
         LOGGER.info("addon loaded")
         self.reload_rules()
 
@@ -314,6 +320,23 @@ class Mitmwall:
         """
 
         self.reload_rules()
+
+    def is_allow_all_traffic(self) -> bool:
+        """
+        Return whether the allow_all_traffic mitmproxy option is enabled.
+        """
+
+        return bool(get_option(OPTION_ALLOW_ALL_TRAFFIC))
+
+    def get_rules_text(self) -> str | None:
+        """
+        Return the current value of the rules_text mitmproxy option joined into a single string, if any.
+        """
+
+        value = cast(Sequence[str], get_option(OPTION_RULES_TEXT))
+        if not value:
+            return None
+        return "\n".join(value)
 
     def apply_addon_config(self, addon_config: AddonConfig) -> None:
         """
@@ -359,29 +382,46 @@ class Mitmwall:
 
     def reload_rules(self) -> None:
         """
-        Load rules from disk and update logged descriptions when they change.
+        Load rules from disk and from the dynamic rules text option.
+        Dynamic rules have the highest priority.
         """
 
+        disk_rules: list[DomainRule] = []
         try:
-            rules = load_rules()
+            disk_rules = load_rules()
         except Exception as exc:
-            self.rules = []
-            self.rule_descriptions = ()
             LOGGER.error(f"failed to load {RULES_DIR}: {exc}")
-            return
+
+        dynamic_rules: list[DomainRule] = []
+        rules_text = self.get_rules_text()
+        if rules_text:
+            try:
+                dynamic_rules = parse_rules_text(rules_text)
+            except Exception as exc:
+                LOGGER.error(f"failed to parse dynamic rules: {exc}")
+
+        all_rules = dynamic_rules + disk_rules
 
         rule_descriptions = tuple(
-            describe_rule(index, rule) for index, rule in enumerate(rules, start=1)
+            describe_rule(index, rule) for index, rule in enumerate(all_rules, start=1)
         )
-        self.rules = rules
+        self.rules = all_rules
 
         if rule_descriptions == self.rule_descriptions:
             return
 
         self.rule_descriptions = rule_descriptions
-        LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_DIR}")
         for description in self.rule_descriptions:
             LOGGER.info(description)
+        if dynamic_rules and disk_rules:
+            LOGGER.info(
+                f"loaded {len(self.rules)} allow rule(s) "
+                + f"({len(dynamic_rules)} dynamic, {len(disk_rules)} from {RULES_DIR})"
+            )
+        elif dynamic_rules:
+            LOGGER.info(f"loaded {len(self.rules)} dynamic allow rule(s)")
+        else:
+            LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_DIR}")
 
     def request(self, flow: FlowLike) -> None:
         """
