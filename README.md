@@ -214,18 +214,14 @@ domain = "pie.dev"
 pathname_pattern = "/headers"
 methods = ["GET"]
 
-# Allow `git fetch` for repositories owned by `esamattis`.
-# The :repo parameter matches exactly one pathname segment.
+# Allow `git pull` and `git push` for `esamattis`
 [[allow]]
 domain = "github.com"
 methods = ["POST"]
-pathname_pattern = "/esamattis/:repo.git/git-upload-pack"
-
-# Same for `git push`
-[[allow]]
-domain = "github.com"
-methods = ["POST"]
-pathname_pattern = "/esamattis/:repo.git/git-receive-pack"
+pathname_pattern = [
+    "/esamattis/:repo.git/git-upload-pack", # pull
+    "/esamattis/:repo.git/git-receive-pack", # push
+]
 
 # Python regex, compiled case-insensitively against the normalized hostname.
 [[allow]]

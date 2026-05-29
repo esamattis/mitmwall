@@ -63,7 +63,7 @@ domain = "api.github.com"
 domain = "github.com"
 methods = ["POST"]
 pathname_pattern = [
-    "/esamattis/:repo.git/git-upload-pack" # pull
+    "/esamattis/:repo.git/git-upload-pack", # pull
     "/esamattis/:repo.git/git-receive-pack", # push
 ]
 
