@@ -592,6 +592,16 @@ domain = "example.com"
         self.assertEqual(len(rules), 1)
         self.assertEqual(rules[0].domain, ("file.example",))
 
+    def test_example_rules_toml_is_valid(self) -> None:
+        """
+        Parse the example-rules.toml file without error to verify it is valid.
+        """
+
+        example_path = Path(__file__).resolve().parents[1] / "example-rules.toml"
+        rules = parse_rules_file(example_path)
+
+        self.assertGreater(len(rules), 0)
+
     def _parse_single_rule(self, content: str) -> DomainRule:
         """
         Parse one domain rule from temporary TOML content.
