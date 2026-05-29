@@ -68,7 +68,7 @@ pathname_pattern = [
 ]
 
 # Read-only and write queries in GraphQL are both POST :(
-# Limit to our own GraphQL API key
+# Limit to our own readly GraphQL API key
 # [[allow]]
 # domain = "api.github.com"
 # pathname_pattern = "/graphql"
