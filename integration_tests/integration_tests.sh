@@ -8,6 +8,6 @@ if [ "$(uname -s)" != "Linux" ]; then
     exit 1
 fi
 
-sudo ./dev-install.sh
+sudo ../dev-install.sh
 
 python3 "$(dirname "$0")/integration_tests.py"

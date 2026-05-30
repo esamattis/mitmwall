@@ -12,9 +12,9 @@ Ensure valid types by running `basedpyright`
 
 Never use any pypi packages. Only use stdlib.
 
-After any changes run `./test.sh` and `./integration_tests.sh`
+After any changes run `./test.sh` and `./integration_tests/integration_tests.sh`
 
-`integration-test-rules.toml` is installed during integration tests.
+`integration_tests/integration-test-rules.toml` is installed during integration tests.
 
 See logs with:
 
