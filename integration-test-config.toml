@@ -6,3 +6,9 @@
 [[iptables.allow]]
 network = "8.8.8.8"
 port = 443
+
+
+# hostcmd with lima https://github.com/esamattis/hostcmd
+[[iptables.allow]]
+network = "192.168.5.0/24"
+port = 48483
