@@ -460,6 +460,16 @@ class MitmwallNetworkTests(unittest.TestCase):
 
         self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
 
+    def test_direct_ftp_to_allowed_domain_is_blocked(self) -> None:
+        """
+        Verify that direct FTP connections to an allowed domain are still blocked
+        when the allow rule only permits DNS queries.
+        """
+
+        self.assert_tcp_blocked(
+            "direct FTP to ftp.ubuntu-tw.org", "ftp.ubuntu-tw.org", 21
+        )
+
     def test_custom_iptables_rule_allows_direct_tcp(self) -> None:
         """
         Verify that a custom iptables allow rule permits direct TCP connections.

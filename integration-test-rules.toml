@@ -97,3 +97,7 @@ methods = "ANY"
 [[allow]]
 domain = "cdn.agentclientprotocol.com"
 pathname_pattern = "/registry/v1/latest/registry.json"
+
+## Allow dns requests to these domains, which are used in some tests.
+[[allow]]
+domain = "ftp.ubuntu-tw.org"
