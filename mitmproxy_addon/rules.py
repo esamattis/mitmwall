@@ -3,16 +3,17 @@ Allow rule parsing and matching for the mitmwall addon.
 """
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeGuard, cast
+from typing import cast
 from urllib.parse import urlsplit
 
 import tomllib
 
 from .constants import ALLOW_RULE_KEYS, ANY_METHOD, DEFAULT_ALLOWED_METHODS, RULES_DIR
 from .pathname_pattern import compile_pathname_pattern
+from .toml_helpers import get_toml_array, is_toml_array, is_toml_table
 
 HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.\^_`|~0-9A-Za-z]+$")
 
@@ -142,43 +143,6 @@ def request_pathname(url: str) -> str:
 
     pathname = urlsplit(url).path
     return pathname or "/"
-
-
-def is_toml_array(value: object) -> TypeGuard[Sequence[object]]:
-    """
-    Return whether a TOML value is an array.
-    """
-
-    return isinstance(value, list)
-
-
-def get_toml_array(raw_value: object, key: str, index: int) -> list[str]:
-    """
-    Normalize a TOML string or array-of-strings value into a list of strings.
-    """
-
-    if isinstance(raw_value, str):
-        return [raw_value]
-    if is_toml_array(raw_value) and raw_value:
-        items: list[str] = []
-        for item_index, item in enumerate(raw_value, start=1):
-            if not isinstance(item, str) or not item.strip():
-                raise ValueError(
-                    f"allow rule #{index}: {key} item #{item_index} must be a non-empty string"
-                )
-            items.append(item)
-        return items
-    raise ValueError(
-        f"allow rule #{index}: {key!r} must be a non-empty string or a non-empty list"
-    )
-
-
-def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
-    """
-    Return whether a TOML value is a table.
-    """
-
-    return isinstance(value, dict)
 
 
 def validate_allowed_keys(

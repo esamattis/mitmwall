@@ -11,19 +11,13 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
-from typing import TypeGuard, cast
+from typing import cast
+
+from mitmproxy_addon.toml_helpers import is_toml_table
 
 CONFIG_PATH = Path("/etc/mitmwall/config.toml")
 CHAIN = "MITMWALL_OUTPUT"
 COMMENT = "mitmwall-custom"
-
-
-def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
-    """
-    Return whether a TOML value is a table (dict with string keys).
-    """
-
-    return isinstance(value, dict)
 
 
 def run_iptables(*args: str) -> subprocess.CompletedProcess[str]:

@@ -4,8 +4,6 @@ Addon configuration parsing for the mitmwall addon.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeGuard
-
 import tomllib
 
 from .constants import (
@@ -16,6 +14,7 @@ from .constants import (
     DEFAULT_LOG_LEVEL_NAME,
     LOG_LEVELS,
 )
+from .toml_helpers import is_toml_table
 
 
 @dataclass(frozen=True)
@@ -92,14 +91,6 @@ def parse_flow_history_keep_entries(value: object) -> int:
         raise ValueError("'flow_history_keep_entries' must be a positive integer")
 
     return value
-
-
-def is_toml_table(value: object) -> TypeGuard[dict[str, object]]:
-    """
-    Return whether a TOML value is a table.
-    """
-
-    return isinstance(value, dict)
 
 
 def parse_addon_config(config_value: object) -> AddonConfig:
