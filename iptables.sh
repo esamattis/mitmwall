@@ -42,7 +42,7 @@ chain=MITMWALL_OUTPUT
 # - Allow root and the proxy user to make outbound upstream connections.
 # - Redirect outbound DNS from non-proxy users to the local DNS proxy.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
-# - Allow installed system time synchronizers to reach upstream NTP.
+# - Allow installed system time synchronizers to reach upstream NTP and DNS.
 # - Allow all loopback traffic so localhost services remain reachable.
 # - Allow other users to connect only to the local proxy, DNS proxy, and web UI ports on this host.
 # - Drop all other new outbound traffic so applications cannot bypass the proxies.
@@ -124,15 +124,60 @@ remove_dns_redirect_rule() {
 }
 
 # Allow installed Ubuntu time synchronization services to reach upstream NTP.
-# Different Ubuntu configurations use different unprivileged service accounts;
-# missing accounts are skipped so minimal systems without a given NTP client can
-# still install the firewall policy successfully.
+# This runs in the filter table, so it decides whether a packet may leave the
+# machine after any NAT rewriting has already happened. Two things are needed:
+# 1) NTP traffic on UDP/123 must be allowed out.
+# 2) DNS traffic on UDP/TCP 53 must be allowed out. This is required even
+#    though a separate nat-table rule (add_ntp_dns_bypass_rule) prevents the
+#    NTP user's DNS from being redirected to the local proxy, because without
+#    this filter rule the OUTPUT chain would still drop the direct query.
 add_ntp_filter_rules() {
     table_cmd=$1
 
     for ntp_user in systemd-timesync _chrony ntp; do
         if ntp_uid=$(id -u "$ntp_user" 2>/dev/null); then
+            # Allow NTP synchronization traffic.
             "$table_cmd" -t filter -A "$chain" -p udp --dport 123 -m owner --uid-owner "$ntp_uid" -j ACCEPT
+            # Allow direct DNS queries (bypassed from the proxy by
+            # add_ntp_dns_bypass_rule) to actually leave the host.
+            "$table_cmd" -t filter -A "$chain" -p udp --dport 53 -m owner --uid-owner "$ntp_uid" -j ACCEPT
+            "$table_cmd" -t filter -A "$chain" -p tcp --dport 53 -m owner --uid-owner "$ntp_uid" -j ACCEPT
+        fi
+    done
+}
+
+# NTP clients need to resolve server hostnames (e.g. pool.ntp.org) before
+# syncing time. This runs in the nat table and stops the generic DNS REDIRECT
+# rule from rewriting their queries to the local mitmproxy DNS listener. Without
+# this bypass, NTP users' DNS would be redirected to 127.0.0.1:58053, and the
+# mitmproxy addon (which only knows about web allow rules) would REFUSE NTP
+# pool domains. ACCEPT in nat means "leave the destination unchanged" so the
+# query goes directly to the real upstream resolver.
+add_ntp_dns_bypass_rule() {
+    table_cmd=$1
+    protocol=$2
+
+    for ntp_user in systemd-timesync _chrony ntp; do
+        if ntp_uid=$(id -u "$ntp_user" 2>/dev/null); then
+            # Insert at the top of the nat OUTPUT chain so this rule matches
+            # before the broader REDIRECT rule that follows.
+            if ! "$table_cmd" -t nat -C OUTPUT -p "$protocol" -m owner --uid-owner "$ntp_uid" --dport 53 -j ACCEPT >/dev/null 2>&1; then
+                "$table_cmd" -t nat -I OUTPUT -p "$protocol" -m owner --uid-owner "$ntp_uid" --dport 53 -j ACCEPT
+            fi
+        fi
+    done
+}
+
+# Remove the NTP DNS bypass rules installed by the "add" action.
+remove_ntp_dns_bypass_rule() {
+    table_cmd=$1
+    protocol=$2
+
+    for ntp_user in systemd-timesync _chrony ntp; do
+        if ntp_uid=$(id -u "$ntp_user" 2>/dev/null); then
+            while "$table_cmd" -t nat -C OUTPUT -p "$protocol" -m owner --uid-owner "$ntp_uid" --dport 53 -j ACCEPT >/dev/null 2>&1; do
+                "$table_cmd" -t nat -D OUTPUT -p "$protocol" -m owner --uid-owner "$ntp_uid" --dport 53 -j ACCEPT
+            done
         fi
     done
 }
@@ -174,9 +219,11 @@ add_output_filter() {
     # mitmproxy's local DNS listener before this filter runs.
     "$table_cmd" -t filter -A "$chain" -m owner --uid-owner systemd-resolve -j ACCEPT
 
-    # Time synchronization clients usually run as unprivileged service users on
-    # Ubuntu. Allow only their outbound NTP traffic so clock updates work without
-    # creating a general network bypass for those users.
+    # Time synchronization clients run as unprivileged service users. The filter
+    # rules here allow their outbound NTP (UDP/123) and direct DNS (UDP/TCP 53)
+    # traffic. Note: the DNS bypass itself happens in the nat table earlier
+    # (add_ntp_dns_bypass_rule); this only grants permission for the already-
+    # bypassed packets to leave the host.
     add_ntp_filter_rules "$table_cmd"
 
     # Permit connections to services on this machine. This keeps localhost and
@@ -235,6 +282,10 @@ add_rules() {
     add_redirect_rule iptables 443
     add_redirect_rule ip6tables 80
     add_redirect_rule ip6tables 443
+    add_ntp_dns_bypass_rule iptables udp
+    add_ntp_dns_bypass_rule iptables tcp
+    add_ntp_dns_bypass_rule ip6tables udp
+    add_ntp_dns_bypass_rule ip6tables tcp
     add_dns_redirect_rule iptables udp
     add_dns_redirect_rule iptables tcp
     add_dns_redirect_rule ip6tables udp
@@ -249,6 +300,10 @@ clear_rules() {
     remove_redirect_rule iptables 443
     remove_redirect_rule ip6tables 80
     remove_redirect_rule ip6tables 443
+    remove_ntp_dns_bypass_rule iptables udp
+    remove_ntp_dns_bypass_rule iptables tcp
+    remove_ntp_dns_bypass_rule ip6tables udp
+    remove_ntp_dns_bypass_rule ip6tables tcp
     remove_dns_redirect_rule iptables udp
     remove_dns_redirect_rule iptables tcp
     remove_dns_redirect_rule ip6tables udp
