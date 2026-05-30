@@ -300,6 +300,13 @@ flow_history_clear_interval = 1000
 # The default is 500. If trimming fails, mitmwall falls back to clearing all
 # flow history entries.
 flow_history_keep_entries = 500
+
+# Custom iptables allow rules for non-HTTP(S) traffic.
+# These are applied to the MITMWALL_OUTPUT chain on service start.
+# IPv4 rules use iptables, IPv6 rules use ip6tables.
+# [[iptables.allow]]
+# network = "192.168.5.0/24"
+# port = 1234
 ```
 
 Restart the service after changing addon configuration:
