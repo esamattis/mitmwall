@@ -3,6 +3,8 @@
 
 [[allow]]
 domain = "github.com"
+[[allow]]
+domain = "api.github.com"
 
 [[allow]]
 domain = "github.com"
