@@ -97,6 +97,25 @@ class AddonConfigTests(unittest.TestCase):
                 }
             )
 
+    def test_parse_addon_config_accepts_iptables_key(self) -> None:
+        """
+        Accept the iptables top-level key used by custom_iptables.py.
+        """
+
+        addon_config = parse_addon_config(
+            {
+                "log_level": "info",
+                "iptables": {
+                    "allow": [
+                        {"network": "192.168.5.0/24", "port": 1234}
+                    ]
+                },
+            }
+        )
+
+        self.assertEqual(addon_config.log_level_name, "info")
+        self.assertTrue(addon_config.block_dns)
+
 
 if __name__ == "__main__":
     _test_program = unittest.main(verbosity=2)

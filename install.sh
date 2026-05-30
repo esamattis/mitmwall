@@ -171,7 +171,7 @@ chmod 0600 "$mitmweb_config_file"
 # ExecStartPre/ExecStopPost hooks, while start.sh launches mitmweb in transparent
 # HTTP(S) mode and DNS mode as the unprivileged mitmwall user.
 info "installing service helper scripts into $optdir"
-install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$optdir/"
+install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$scriptdir/custom_iptables.py" "$optdir/"
 
 # Install the mitmproxy addon package that enforces the allow/block rules.
 # Remove the previous single-file addon path and any old package directory so

@@ -33,6 +33,7 @@ proxy_port=58080
 dns_port=58053
 web_port=58081
 chain=MITMWALL_OUTPUT
+custom_iptables=/opt/mitmwall/custom_iptables.py
 
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
@@ -293,9 +294,17 @@ add_rules() {
 
     add_output_filter iptables
     add_output_filter ip6tables
+
+    if [ -x "$custom_iptables" ]; then
+        "$custom_iptables" add
+    fi
 }
 
 clear_rules() {
+    if [ -x "$custom_iptables" ]; then
+        "$custom_iptables" clear
+    fi
+
     remove_redirect_rule iptables 80
     remove_redirect_rule iptables 443
     remove_redirect_rule ip6tables 80
