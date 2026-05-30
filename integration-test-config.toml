@@ -1,0 +1,8 @@
+# Integration test configuration for mitmwall.
+# Installed to /etc/mitmwall/config.toml by dev-install.sh.
+
+# Allow direct TCP connections to Google Public DNS on port 443 for integration
+# testing of custom iptables rule support.
+[[iptables.allow]]
+network = "8.8.8.8"
+port = 443

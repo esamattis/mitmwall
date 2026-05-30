@@ -460,6 +460,15 @@ class MitmwallNetworkTests(unittest.TestCase):
 
         self.assert_tcp_blocked("direct SSH to github.com", "github.com", 22)
 
+    def test_custom_iptables_rule_allows_direct_tcp(self) -> None:
+        """
+        Verify that a custom iptables allow rule permits direct TCP connections.
+        """
+
+        self.assert_tcp_allowed(
+            "custom iptables rule to 8.8.8.8:443", "8.8.8.8", 443
+        )
+
     def test_direct_dns_queries_to_public_resolver_are_proxied(self) -> None:
         """
         Verify that direct DNS queries are transparently filtered by mitmproxy.
