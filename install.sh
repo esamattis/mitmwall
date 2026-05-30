@@ -119,25 +119,7 @@ chmod 0750 "$etcdir" "$rulesdir"
 # preserved across reinstallation.
 if [ ! -f "$addon_config_file" ]; then
     info "creating default addon config at $addon_config_file"
-    cat >"$addon_config_file" <<'EOF'
-# Available log_level values: "debug", "info", "warning", "error", "critical".
-# The default is "info".
-log_level = "info"
-
-# When true, DNS queries must match allow rules. Set to false to let the addon
-# pass through all DNS queries while keeping the firewall redirection rules.
-# The default is true.
-block_dns = true
-
-# Clear mitmproxy's in-memory flow history after this many HTTP requests.
-# The default is 1000.
-flow_history_clear_interval = 1000
-
-# Keep this many newest flow-history entries when trimming flow history.
-# The default is 500. If trimming fails, mitmwall falls back to clearing all
-# flow history entries.
-flow_history_keep_entries = 500
-EOF
+    install -o root -g "$user_group" -m 0640 "$scriptdir/addon-config.toml" "$addon_config_file"
 fi
 chown root:"$user_group" "$addon_config_file"
 chmod 0640 "$addon_config_file"
