@@ -155,16 +155,17 @@ sudo systemctl restart mitmwall
 
 ## Web interface
 
-mitmweb listens on port `58081`.
+The `mitmweb` web interface can be used to inspect traffic, which makes it
+easier to create accurate rules. Rules added through the options interface are
+applied immediately without a service reload and are persisted to
+`/etc/mitmwall/rules.d/2-web.toml`
 
-The password can be viewed as an administrator from the generated mitmweb config:
+ - mitmweb listens on port `58081`.
+ - The password can be viewed as an administrator from the generated mitmweb config:
 
 ```console
 sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 ```
-
-It is also possible to add new rules dynamically from the mitmweb without having
-to restart the server. The dynamically added rules are persisted to `/etc/mitmwall/rules.d/2-web.toml`
 
 <img width="1108" height="348" alt="image" src="https://github.com/user-attachments/assets/0f28fb30-5537-4438-aa49-65971e41d210" />
 
@@ -236,6 +237,15 @@ Pathname filters reduce accidental exfiltration risk, but they do not make an
 allowed domain safe: secrets may still be leaked through URLs, query strings,
 headers, or any endpoint where an allowed method causes data to leave the host.
 
+### Raw sockets
+
+Regular non-root processes on Ubuntu do not have `CAP_NET_RAW`, so they cannot
+create raw sockets that would bypass iptables. Only root and processes explicitly
+granted this capability (for example via `setcap`) can craft packets that skip
+the firewall rules. This makes raw socket-based circumvention impractical for
+the threat model mitmwall targets.
+
+### Bottomline
 
 But the idea is not to protect from targeted attacks, but from rogue AI agents
 gone mad and from general credentials dumping malware as seen on the npm
