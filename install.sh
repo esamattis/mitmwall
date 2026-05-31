@@ -119,7 +119,7 @@ chmod 0750 "$etcdir" "$rulesdir"
 # preserved across reinstallation.
 if [ ! -f "$addon_config_file" ]; then
     info "creating default addon config at $addon_config_file"
-    install -o root -g "$user_group" -m 0640 "$scriptdir/addon-config.toml" "$addon_config_file"
+    install -o root -g "$user_group" -m 0640 "$scriptdir/config-default.toml" "$addon_config_file"
 fi
 chown root:"$user_group" "$addon_config_file"
 chmod 0640 "$addon_config_file"
