@@ -275,39 +275,11 @@ certificate or the rebuilt system CA bundle so HTTPS clients can trust
 certificates generated while mitmwall is intercepting traffic. The values apply
 to new login sessions after installation.
 
-## Addon configuration
+## Configuration
 
-Addon settings are stored in `/etc/mitmwall/config.toml`. The installer creates
-this file if it does not already exist.
-
-Available settings:
-
-```toml
-# Available log_level values: "debug", "info", "warning", "error", "critical".
-# The default is "info".
-log_level = "info"
-
-# When true, DNS queries must match allow rules. Set to false to let the addon
-# pass through all DNS queries while keeping the firewall redirection rules.
-# The default is true.
-block_dns = true
-
-# Clear mitmproxy's in-memory flow history after this many HTTP requests.
-# The default is 1000.
-flow_history_clear_interval = 1000
-
-# Keep this many newest flow-history entries when trimming flow history.
-# The default is 500. If trimming fails, mitmwall falls back to clearing all
-# flow history entries.
-flow_history_keep_entries = 500
-
-# Custom iptables bypass rules. Allow some IP ranges or ports to bypass the
-# firewall and proxy. Bypassed traffic will not be visible in mitmweb and will
-# not be subject to the addon rules.
-# [[iptables.bypass]]
-# network = "192.168.5.0/24"
-# port = 1234
-```
+Settings are stored in `/etc/mitmwall/config.toml`. The installer creates this
+file if it does not already exist. See the [default config](config-default.toml) for
+the available settings.
 
 Restart the service after changing addon configuration:
 
