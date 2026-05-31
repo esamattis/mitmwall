@@ -51,18 +51,18 @@ class AddonImportBehaviorTests(unittest.TestCase):
         """
 
         module_names = [
-            "mitmproxy_addon.pathname_pattern",
-            "mitmproxy_addon.addon",
-            "mitmproxy_addon.main",
+            "src.addon.pathname_pattern",
+            "src.addon.addon",
+            "src.addon.main",
         ]
         saved_modules = save_modules(module_names)
         clear_modules(module_names)
 
         try:
-            module = importlib.import_module("mitmproxy_addon.pathname_pattern")
+            module = importlib.import_module("src.addon.pathname_pattern")
 
             self.assertTrue(hasattr(module, "compile_pathname_pattern"))
-            self.assertNotIn("mitmproxy_addon.addon", sys.modules)
+            self.assertNotIn("src.addon.addon", sys.modules)
         finally:
             restore_modules(saved_modules)
 
@@ -72,24 +72,24 @@ class AddonImportBehaviorTests(unittest.TestCase):
         """
 
         module_names = [
-            "mitmproxy_addon.main",
-            "mitmproxy_addon.addon",
-            "mitmproxy_addon.addon_logging",
+            "src.addon.main",
+            "src.addon.addon",
+            "src.addon.addon_logging",
         ]
         saved_modules = save_modules(module_names)
         clear_modules(module_names)
 
         try:
-            import mitmproxy_addon.addon_config as addon_config
+            import src.addon.addon_config as addon_config
 
             with patch.object(
                 addon_config,
                 "load_addon_config",
                 side_effect=AssertionError(
-                    "importing mitmproxy_addon.main should not load runtime config"
+                    "importing src.addon.main should not load runtime config"
                 ),
             ):
-                module = importlib.import_module("mitmproxy_addon.main")
+                module = importlib.import_module("src.addon.main")
 
             self.assertTrue(hasattr(module, "addons"))
         finally:

@@ -69,7 +69,7 @@ bindir=$optdir/bin
 etcdir=/etc/mitmwall
 rulesdir=$etcdir/rules.d
 addon_config_file=$etcdir/config.toml
-addon_dir=$optdir/mitmproxy_addon
+addon_dir=$optdir/src
 mitmproxy_confdir=$optdir/mitmweb
 mitmweb_config_file=$mitmproxy_confdir/config.yaml
 servicefile=/etc/systemd/system/mitmwall.service
@@ -153,16 +153,18 @@ chmod 0600 "$mitmweb_config_file"
 # ExecStartPre/ExecStopPost hooks, while start.sh launches mitmweb in transparent
 # HTTP(S) mode and DNS mode as the unprivileged mitmwall user.
 info "installing service helper scripts into $optdir"
-install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$scriptdir/custom_iptables.py" "$optdir/"
+install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$scriptdir/src/systemd/custom_iptables.py" "$optdir/"
 
 # Install the mitmproxy addon package that enforces the allow/block rules.
 # Remove the previous single-file addon path and any old package directory so
 # upgrades do not leave stale code behind.
 info "installing mitmproxy addon into $addon_dir"
 rm -f "$optdir/mitmwall_addon.py"
-rm -rf "$optdir/mitmwall_addon" "$addon_dir"
-install -d -m 0755 "$addon_dir"
-install -m 0644 "$scriptdir"/mitmproxy_addon/*.py "$addon_dir/"
+rm -rf "$optdir/mitmwall_addon" "$optdir/mitmproxy_addon" "$addon_dir"
+install -d -m 0755 "$addon_dir" "$addon_dir/addon" "$addon_dir/utils"
+install -m 0644 "$scriptdir"/src/__init__.py "$addon_dir/"
+install -m 0644 "$scriptdir"/src/addon/*.py "$addon_dir/addon/"
+install -m 0644 "$scriptdir"/src/utils/*.py "$addon_dir/utils/"
 
 # Install the repository-provided example rules into the rules directory. Rule
 # files are loaded in alphabetical filename order, so the numeric prefix gives

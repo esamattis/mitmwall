@@ -10,8 +10,8 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast, final, override
 
-import mitmproxy_addon.addon as addon_module
-from mitmproxy_addon.addon import (
+import src.addon.addon as addon_module
+from src.addon.addon import (
     DNSFlowLike,
     DNSQuestionLike,
     DNSRequestLike,
@@ -21,8 +21,8 @@ from mitmproxy_addon.addon import (
     RequestLike,
     trim_mitmproxy_view_flow_history,
 )
-from mitmproxy_addon.pathname_pattern import compile_pathname_pattern
-from mitmproxy_addon.rules import (
+from src.addon.pathname_pattern import compile_pathname_pattern
+from src.addon.rules import (
     DomainRule,
     InjectedHeader,
     PathnameFilter,
@@ -597,7 +597,7 @@ domain = "example.com"
         Parse the example-rules.toml file without error to verify it is valid.
         """
 
-        example_path = Path(__file__).resolve().parents[1] / "example-rules.toml"
+        example_path = Path(__file__).resolve().parents[2] / "example-rules.toml"
         rules = parse_rules_file(example_path)
 
         self.assertGreater(len(rules), 0)

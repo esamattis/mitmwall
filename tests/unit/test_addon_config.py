@@ -4,8 +4,8 @@ Unit tests for addon configuration parsing.
 
 import unittest
 
-from mitmproxy_addon.addon_config import default_addon_config, parse_addon_config
-from mitmproxy_addon.constants import (
+from src.addon.addon_config import default_addon_config, parse_addon_config
+from src.addon.constants import (
     DEFAULT_BLOCK_DNS,
     DEFAULT_FLOW_HISTORY_CLEAR_INTERVAL,
     DEFAULT_FLOW_HISTORY_KEEP_ENTRIES,

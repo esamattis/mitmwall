@@ -4,7 +4,7 @@ Unit tests for pathname pattern parsing and compilation.
 
 import unittest
 
-from mitmproxy_addon.pathname_pattern import (
+from src.addon.pathname_pattern import (
     GroupToken,
     ParamToken,
     TextToken,

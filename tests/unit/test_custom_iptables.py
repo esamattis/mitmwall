@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import custom_iptables
+from src.systemd import custom_iptables
 
 
 class ParseCustomRulesTests(unittest.TestCase):
@@ -143,7 +143,7 @@ class AddRuleTests(unittest.TestCase):
     Verify add_rule inserts custom rules into an iptables chain.
     """
 
-    @patch("custom_iptables.subprocess.run")
+    @patch("src.systemd.custom_iptables.subprocess.run")
     def test_inserts_before_drop(self, mock_run: MagicMock) -> None:
         """
         The rule is inserted before the DROP rule when one exists.
@@ -180,7 +180,7 @@ class AddRuleTests(unittest.TestCase):
             "ACCEPT",
         ])
 
-    @patch("custom_iptables.subprocess.run")
+    @patch("src.systemd.custom_iptables.subprocess.run")
     def test_appends_when_no_drop(self, mock_run: MagicMock) -> None:
         """
         The rule is appended when no DROP rule is found.
@@ -222,7 +222,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
     Verify removal of custom rules from an iptables chain.
     """
 
-    @patch("custom_iptables.subprocess.run")
+    @patch("src.systemd.custom_iptables.subprocess.run")
     def test_removes_rules_with_comment(self, mock_run: MagicMock) -> None:
         """
         Rules tagged with the mitmwall-custom comment are removed by line number.
@@ -250,7 +250,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
             "1",
         ])
 
-    @patch("custom_iptables.subprocess.run")
+    @patch("src.systemd.custom_iptables.subprocess.run")
     def test_handles_missing_chain(self, mock_run: MagicMock) -> None:
         """
         Removal stops gracefully when the chain does not exist.
@@ -272,9 +272,9 @@ class AddRulesTests(unittest.TestCase):
     Verify add_rules orchestrates config parsing and iptables insertion.
     """
 
-    @patch("custom_iptables.clear_rules")
-    @patch("custom_iptables.add_rule")
-    @patch("custom_iptables.parse_custom_rules")
+    @patch("src.systemd.custom_iptables.clear_rules")
+    @patch("src.systemd.custom_iptables.add_rule")
+    @patch("src.systemd.custom_iptables.parse_custom_rules")
     def test_adds_ipv4_and_ipv6_rules(
         self,
         mock_parse: MagicMock,
@@ -297,9 +297,9 @@ class AddRulesTests(unittest.TestCase):
         mock_add.assert_any_call(["iptables"], "MITMWALL_OUTPUT", "192.168.0.0/16", 80)
         mock_add.assert_any_call(["ip6tables"], "MITMWALL_OUTPUT", "2001:db8::/32", 443)
 
-    @patch("custom_iptables.clear_rules")
-    @patch("custom_iptables.add_rule")
-    @patch("custom_iptables.parse_custom_rules")
+    @patch("src.systemd.custom_iptables.clear_rules")
+    @patch("src.systemd.custom_iptables.add_rule")
+    @patch("src.systemd.custom_iptables.parse_custom_rules")
     def test_no_rules_when_config_empty(
         self,
         mock_parse: MagicMock,
@@ -323,7 +323,7 @@ class ClearRulesTests(unittest.TestCase):
     Verify clear_rules orchestrates removal from both iptables and ip6tables.
     """
 
-    @patch("custom_iptables.remove_custom_rules_from_chain")
+    @patch("src.systemd.custom_iptables.remove_custom_rules_from_chain")
     def test_clears_both_chains(self, mock_remove: MagicMock) -> None:
         """
         clear_rules removes custom rules from IPv4 and IPv6 chains.
@@ -341,7 +341,7 @@ class MainTests(unittest.TestCase):
     Verify the script entry point dispatches to the correct actions.
     """
 
-    @patch("custom_iptables.add_rules")
+    @patch("src.systemd.custom_iptables.add_rules")
     def test_main_add(self, mock_add: MagicMock) -> None:
         """
         The 'add' argument triggers add_rules.
@@ -352,7 +352,7 @@ class MainTests(unittest.TestCase):
 
         mock_add.assert_called_once()
 
-    @patch("custom_iptables.clear_rules")
+    @patch("src.systemd.custom_iptables.clear_rules")
     def test_main_clear(self, mock_clear: MagicMock) -> None:
         """
         The 'clear' argument triggers clear_rules.

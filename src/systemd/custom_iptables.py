@@ -13,7 +13,7 @@ import tomllib
 from pathlib import Path
 from typing import cast
 
-from mitmproxy_addon.toml_helpers import is_toml_table
+from src.utils.toml_helpers import is_toml_table
 
 CONFIG_PATH = Path("/etc/mitmwall/config.toml")
 CHAIN = "MITMWALL_OUTPUT"

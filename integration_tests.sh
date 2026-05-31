@@ -10,4 +10,4 @@ fi
 
 sudo ./dev-install.sh
 
-python3 "$(dirname "$0")/integration_tests.py"
+python3 "$(dirname "$0")/tests/integration/integration_tests.py"

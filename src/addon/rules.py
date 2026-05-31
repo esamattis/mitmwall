@@ -13,7 +13,7 @@ import tomllib
 
 from .constants import ALLOW_RULE_KEYS, ANY_METHOD, DEFAULT_ALLOWED_METHODS, RULES_DIR
 from .pathname_pattern import compile_pathname_pattern
-from .toml_helpers import get_toml_array, is_toml_array, is_toml_table
+from src.utils.toml_helpers import get_toml_array, is_toml_array, is_toml_table
 
 HEADER_NAME_PATTERN = re.compile(r"^[!#$%&'*+\-.\^_`|~0-9A-Za-z]+$")
 

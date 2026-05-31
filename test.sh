@@ -2,7 +2,7 @@
 
 set -eu
 
-python3 -m unittest discover -s "$(dirname "$0")/tests" -p "test_*.py"
+python3 -m unittest discover -s "$(dirname "$0")/tests/unit" -p "test_*.py"
 
 if command -v basedpyright >/dev/null 2>&1; then
     basedpyright
