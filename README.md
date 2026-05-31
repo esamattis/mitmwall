@@ -325,6 +325,12 @@ The password can be viewed as an administrator from the generated mitmweb config
 sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 ```
 
+It is also possible to add new rules dynamically from the mitmweb without having
+to restart the server. The dynamically added rules are persisted to `/etc/mitmwall/rules.d/2-web.toml`
+
+<img width="1108" height="348" alt="image" src="https://github.com/user-attachments/assets/0f28fb30-5537-4438-aa49-65971e41d210" />
+
+
 ## DNS filtering
 
 mitmwall runs mitmproxy in both transparent HTTP(S) mode and DNS mode. The
