@@ -1,9 +1,9 @@
 # mitmwall
 
-mitmwall is an egress firewall/WAF for Ubuntu. It combines `iptables` with
-[mitmproxy](https://mitmproxy.org/) to ensure that only explicitly allowed
-HTTP(s) routes can be reached. Any network connection that does not match the
-allowlist is blocked. This prevents:
+mitmwall is an egress Web Application Firewall (WAF) for Ubuntu. It combines
+`iptables` with [mitmproxy](https://mitmproxy.org/) to ensure that only
+explicitly allowed HTTP(s) routes can be reached. Any network connection that
+does not match the allowlist is blocked. This prevents:
 
 - **Data exfiltration** — compromised npm/pypi/cargo etc. packages, rogue AI
   agents, or other untrusted processes stealing credentials, API keys, or source
@@ -12,6 +12,8 @@ allowlist is blocked. This prevents:
 
 The built-in mitmweb interface can be used to monitor all proxied traffic in
 real time.
+
+Read this blog post for background [Protecting against npm and AI agents](https://esamattisnotes.wordpress.com/2026/05/31/protecting-against-npm-and-ai-agents/)
 
 The name is a wordplay for mitmproxy + firewall = mitmwall.
 
