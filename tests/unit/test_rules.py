@@ -4,13 +4,14 @@ Unit tests for allow-rule parsing and request header injections.
 
 import re
 import tempfile
-import tomllib
 import unittest
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
-from typing import cast, final, override
+from typing import final, override
+from unittest.mock import patch
 
-import src.addon.addon as addon_module
+import tomllib
+
 from src.addon.addon import (
     DNSFlowLike,
     DNSQuestionLike,
@@ -449,7 +450,9 @@ domain = ["github.com", "api.github.com"]
         self.assertTrue(rule.matches_host("api.github.com"))
         self.assertFalse(rule.matches_host("other.example"))
 
-    def test_parse_rules_file_accepts_domain_array_with_include_subdomains(self) -> None:
+    def test_parse_rules_file_accepts_domain_array_with_include_subdomains(
+        self,
+    ) -> None:
         """
         Parse domain as an array with include_subdomains applying to all entries.
         """
@@ -616,169 +619,104 @@ domain = "example.com"
         return rules[0]
 
 
-class DynamicRulesAddonTests(unittest.TestCase):
+class PersistRulesTextTests(unittest.TestCase):
     """
-    Verify addon behavior with dynamically configured rules.
+    Verify addon persists the rules_text option to disk.
     """
 
-    def test_dynamic_rules_take_priority_over_disk_rules(self) -> None:
+    def test_valid_rules_text_is_written_to_web_rules_file(self) -> None:
         """
-        When both dynamic and disk rules match, the dynamic rule wins.
-        """
-
-        addon = Mitmwall()
-        addon.is_allow_all_traffic = lambda: False
-        addon.rules = [
-            DomainRule(
-                name="dynamic rule",
-                domain=("pie.dev",),
-                include_subdomains=False,
-                methods=("GET",),
-                inject_headers=(
-                    InjectedHeader(name="X-Dynamic", value="yes"),
-                ),
-            ),
-            DomainRule(
-                name="disk rule",
-                domain=("pie.dev",),
-                include_subdomains=False,
-                methods=("GET",),
-                inject_headers=(
-                    InjectedHeader(name="X-Disk", value="yes"),
-                ),
-            ),
-        ]
-        flow = FakeFlow(FakeRequest("pie.dev", "GET", "https://pie.dev/"))
-
-        addon.request(flow)
-
-        self.assertFalse(flow.killed)
-        self.assertEqual(flow.request.headers["X-Dynamic"], "yes")
-
-    def _patch_load_rules(self, rules: list[DomainRule]) -> Callable[[], None]:
-        """
-        Temporarily replace load_rules on the addon module and return restore.
-        """
-
-        original = cast(Callable[[], list[DomainRule]], getattr(addon_module, "load_rules"))
-        setattr(addon_module, "load_rules", lambda: rules)
-
-        def restore() -> None:
-            setattr(addon_module, "load_rules", original)
-
-        return restore
-
-    def test_reload_rules_loads_dynamic_rules(self) -> None:
-        """
-        reload_rules parses dynamic rules from the text option.
+        Valid rules text is persisted to the web rules file.
         """
 
         addon = Mitmwall()
         addon.get_rules_text = lambda: '[[allow]]\ndomain = "dynamic.example"\n'
-        restore = self._patch_load_rules([
-            DomainRule(
-                name="domain disk.example",
-                domain=("disk.example",),
-                include_subdomains=False,
-                methods=("GET",),
-            ),
-        ])
-        try:
-            addon.reload_rules()
-        finally:
-            restore()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            web_path = Path(temp_dir) / "2-web.toml"
+            with patch("src.addon.addon.WEB_RULES_FILE", web_path):
+                addon._persist_rules_text()  # pyright: ignore[reportPrivateUsage]
+            self.assertTrue(web_path.exists())
+            self.assertEqual(
+                web_path.read_text(encoding="utf-8"),
+                '[[allow]]\ndomain = "dynamic.example"\n',
+            )
 
-        self.assertEqual(len(addon.rules), 2)
-        self.assertEqual(addon.rules[0].domain, ("dynamic.example",))
-        self.assertEqual(addon.rules[1].domain, ("disk.example",))
-
-    def test_reload_rules_clears_previous_dynamic_rules(self) -> None:
+    def test_empty_rules_text_clears_web_rules_file(self) -> None:
         """
-        When dynamic rules text changes, old dynamic rules are replaced.
-        """
-
-        addon = Mitmwall()
-        addon.get_rules_text = lambda: '[[allow]]\ndomain = "first.example"\n'
-        restore = self._patch_load_rules([])
-        try:
-            addon.reload_rules()
-            self.assertEqual(len(addon.rules), 1)
-            self.assertEqual(addon.rules[0].domain, ("first.example",))
-
-            addon.get_rules_text = lambda: '[[allow]]\ndomain = "second.example"\n'
-            addon.reload_rules()
-            self.assertEqual(len(addon.rules), 1)
-            self.assertEqual(addon.rules[0].domain, ("second.example",))
-        finally:
-            restore()
-
-    def test_reload_rules_keeps_disk_rules_when_dynamic_text_is_invalid(
-        self,
-    ) -> None:
-        """
-        Invalid dynamic rules text logs an error and keeps disk rules.
-        """
-
-        addon = Mitmwall()
-        addon.get_rules_text = lambda: "invalid toml ["
-        restore = self._patch_load_rules([
-            DomainRule(
-                name="domain disk.example",
-                domain=("disk.example",),
-                include_subdomains=False,
-                methods=("GET",),
-            ),
-        ])
-        try:
-            addon.reload_rules()
-            self.assertEqual(len(addon.rules), 1)
-            self.assertEqual(addon.rules[0].domain, ("disk.example",))
-        finally:
-            restore()
-
-    def test_reload_rules_ignores_empty_dynamic_text(self) -> None:
-        """
-        An empty or None dynamic rules text is ignored.
+        An empty rules text option writes an empty allow list to the file.
         """
 
         addon = Mitmwall()
         addon.get_rules_text = lambda: ""
-        restore = self._patch_load_rules([
-            DomainRule(
-                name="domain disk.example",
-                domain=("disk.example",),
-                include_subdomains=False,
-                methods=("GET",),
-            ),
-        ])
-        try:
-            addon.reload_rules()
-            self.assertEqual(len(addon.rules), 1)
-            self.assertEqual(addon.rules[0].domain, ("disk.example",))
-        finally:
-            restore()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            web_path = Path(temp_dir) / "2-web.toml"
+            _ = web_path.write_text("old content", encoding="utf-8")
+            with patch("src.addon.addon.WEB_RULES_FILE", web_path):
+                addon._persist_rules_text()  # pyright: ignore[reportPrivateUsage]
+            self.assertEqual(
+                web_path.read_text(encoding="utf-8"), "# no custom rules from mitmweb\n"
+            )
 
-    def test_reload_rules_ignores_none_dynamic_text(self) -> None:
+    def test_none_rules_text_clears_web_rules_file(self) -> None:
         """
-        A None dynamic rules text is ignored.
+        A None rules text option writes an empty allow list to the file.
         """
 
         addon = Mitmwall()
         addon.get_rules_text = lambda: None
-        restore = self._patch_load_rules([
-            DomainRule(
-                name="domain disk.example",
-                domain=("disk.example",),
-                include_subdomains=False,
-                methods=("GET",),
-            ),
-        ])
-        try:
-            addon.reload_rules()
-            self.assertEqual(len(addon.rules), 1)
-            self.assertEqual(addon.rules[0].domain, ("disk.example",))
-        finally:
-            restore()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            web_path = Path(temp_dir) / "2-web.toml"
+            _ = web_path.write_text("old content", encoding="utf-8")
+            with patch("src.addon.addon.WEB_RULES_FILE", web_path):
+                addon._persist_rules_text()  # pyright: ignore[reportPrivateUsage]
+            self.assertEqual(
+                web_path.read_text(encoding="utf-8"), "# no custom rules from mitmweb\n"
+            )
+
+    def test_invalid_rules_text_is_not_persisted(self) -> None:
+        """
+        Invalid rules text is rejected and the existing file is left untouched.
+        """
+
+        addon = Mitmwall()
+        addon.get_rules_text = lambda: "invalid toml ["
+        with tempfile.TemporaryDirectory() as temp_dir:
+            web_path = Path(temp_dir) / "2-web.toml"
+            _ = web_path.write_text("old content", encoding="utf-8")
+            with patch("src.addon.addon.WEB_RULES_FILE", web_path):
+                addon._persist_rules_text()  # pyright: ignore[reportPrivateUsage]
+            self.assertEqual(web_path.read_text(encoding="utf-8"), "old content")
+
+
+class StartupPersistTests(unittest.TestCase):
+    """
+    Verify configure() persists rules text only after running() has been called.
+    """
+
+    def test_configure_does_not_persist_before_running(self) -> None:
+        """
+        configure() skips persisting rules text before running() has been called.
+        """
+
+        addon = Mitmwall()
+        addon.reload_rules = lambda: None
+        persist_calls: list[None] = []
+        addon._persist_rules_text = lambda: persist_calls.append(None)  # pyright: ignore[reportPrivateUsage]
+        addon.configure({"01_mitmwall_rules_text"})
+        self.assertEqual(len(persist_calls), 0)
+
+    def test_configure_persists_after_running(self) -> None:
+        """
+        configure() persists rules text after running() has been called.
+        """
+
+        addon = Mitmwall()
+        addon.reload_rules = lambda: None
+        persist_calls: list[None] = []
+        addon._persist_rules_text = lambda: persist_calls.append(None)  # pyright: ignore[reportPrivateUsage]
+        addon.running()
+        addon.configure({"01_mitmwall_rules_text"})
+        self.assertEqual(len(persist_calls), 1)
 
 
 class DNSAddonTests(unittest.TestCase):
@@ -1042,7 +980,8 @@ class FakeMitmproxyView:
         """
 
         self._store.update(
-            (str(index), flow) for index, flow in enumerate(flows, start=len(self._store))
+            (str(index), flow)
+            for index, flow in enumerate(flows, start=len(self._store))
         )
 
     def stored_flows(self) -> list[object]:
@@ -1124,7 +1063,9 @@ class AllowAllTrafficAddonTests(unittest.TestCase):
         addon = Mitmwall()
         addon.rules = []
         addon.is_allow_all_traffic = lambda: True
-        flow = FakeFlow(FakeRequest("blocked.example", "GET", "https://blocked.example/"))
+        flow = FakeFlow(
+            FakeRequest("blocked.example", "GET", "https://blocked.example/")
+        )
 
         addon.request(flow)
 
@@ -1138,7 +1079,9 @@ class AllowAllTrafficAddonTests(unittest.TestCase):
         addon = Mitmwall()
         addon.rules = []
         addon.is_allow_all_traffic = lambda: False
-        flow = FakeFlow(FakeRequest("blocked.example", "GET", "https://blocked.example/"))
+        flow = FakeFlow(
+            FakeRequest("blocked.example", "GET", "https://blocked.example/")
+        )
 
         addon.request(flow)
 

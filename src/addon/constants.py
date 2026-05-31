@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 RULES_DIR = Path("/etc/mitmwall/rules.d")
+WEB_RULES_FILE = RULES_DIR / "2-web.toml"
 ADDON_CONFIG_FILE = Path("/etc/mitmwall/config.toml")
 DEFAULT_LOG_LEVEL_NAME = "info"
 DEFAULT_BLOCK_DNS = True

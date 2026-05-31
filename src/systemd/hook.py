@@ -14,7 +14,7 @@ from typing import cast
 
 import tomllib
 
-from src.addon.constants import ADDON_CONFIG_FILE
+from src.addon.constants import ADDON_CONFIG_FILE, WEB_RULES_FILE
 from src.utils.toml_helpers import is_toml_table
 
 USER = "mitmwall"
@@ -887,10 +887,40 @@ def remove_output_filter(table_cmd: str) -> None:
         )
 
 
+def ensure_web_rules_file() -> None:
+    """
+    Ensure the web-managed rules file exists and is writable by the mitmwall user.
+
+    The mitmweb UI sets the rules_text option at runtime; the addon persists
+    changes to this file.  Because the rules directory is owned by root with
+    group mitmwall and mode 0750, the unprivileged addon process cannot create
+    new files there, so the hook (running as root) pre-creates the file and
+    sets permissions so the mitmwall user can rewrite it.
+    """
+
+    if not WEB_RULES_FILE.exists():
+        _ = WEB_RULES_FILE.write_text(
+            "# no custom rules from mitmweb\n", encoding="utf-8"
+        )
+
+    _ = subprocess.run(
+        ["chown", "root:mitmwall", str(WEB_RULES_FILE)],
+        capture_output=True,
+        check=True,
+    )
+    _ = subprocess.run(
+        ["chmod", "660", str(WEB_RULES_FILE)],
+        capture_output=True,
+        check=True,
+    )
+
+
 def add_rules() -> None:
     """
     Install the full transparent proxy firewall policy.
     """
+
+    ensure_web_rules_file()
 
     enable_forwarding()
 

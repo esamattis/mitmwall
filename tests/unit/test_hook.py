@@ -336,6 +336,55 @@ class ClearCustomRulesTests(unittest.TestCase):
         mock_remove.assert_any_call("ip6tables", "MITMWALL_OUTPUT")
 
 
+class EnsureWebRulesFileTests(unittest.TestCase):
+    """
+    Verify ensure_web_rules_file creates the file and sets permissions.
+    """
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_creates_file_when_missing(self, _mock_run: MagicMock) -> None:
+        """
+        The web rules file is created with an empty allow list when missing.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "2-web.toml"
+            with patch("src.systemd.hook.WEB_RULES_FILE", path):
+                hook.ensure_web_rules_file()
+
+            self.assertTrue(path.exists())
+            self.assertEqual(path.read_text(encoding="utf-8"), "# no custom rules from mitmweb\n")
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_does_not_overwrite_existing_file(self, _mock_run: MagicMock) -> None:
+        """
+        An existing web rules file is left untouched.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "2-web.toml"
+            _ = path.write_text("existing content", encoding="utf-8")
+            with patch("src.systemd.hook.WEB_RULES_FILE", path):
+                hook.ensure_web_rules_file()
+
+            self.assertEqual(path.read_text(encoding="utf-8"), "existing content")
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_runs_chown_and_chmod(self, mock_run: MagicMock) -> None:
+        """
+        Ownership and permissions are set so the mitmwall user can write the file.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "2-web.toml"
+            with patch("src.systemd.hook.WEB_RULES_FILE", path):
+                hook.ensure_web_rules_file()
+
+            commands = [call[0][0] for call in mock_run.call_args_list]
+            self.assertIn(["chown", "root:mitmwall", str(path)], commands)
+            self.assertIn(["chmod", "660", str(path)], commands)
+
+
 class MainTests(unittest.TestCase):
     """
     Verify the script entry point dispatches to the correct actions.

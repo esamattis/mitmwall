@@ -16,6 +16,7 @@ from .constants import (
     OPTION_ALLOW_ALL_TRAFFIC,
     OPTION_RULES_TEXT,
     RULES_DIR,
+    WEB_RULES_FILE,
 )
 from .rules import (
     DomainRule,
@@ -284,6 +285,7 @@ class Mitmwall:
         self.requests_since_flow_history_clear: int = 0
         self.flow_history_clearer: Callable[[int], int] = clear_mitmproxy_flow_history
         self.local_hostname: str = normalize_host(socket.gethostname())
+        self._startup_done: bool = False
 
     def load(self, loader: LoaderLike) -> None:
         """
@@ -292,6 +294,15 @@ class Mitmwall:
 
         addon_config = setup_logging()
         self.apply_addon_config(addon_config)
+        default_rules_text: Sequence[str] = ()
+        if WEB_RULES_FILE.exists():
+            try:
+                file_text = WEB_RULES_FILE.read_text(encoding="utf-8")
+                file_lines = file_text.splitlines()
+                if file_lines != ["# no custom rules from mitmweb"]:
+                    default_rules_text = tuple(file_lines)
+            except Exception as exc:
+                LOGGER.error(f"failed to read web rules file for default: {exc}")
         loader.add_option(
             name=OPTION_ALLOW_ALL_TRAFFIC,
             typespec=bool,
@@ -301,7 +312,7 @@ class Mitmwall:
         loader.add_option(
             name=OPTION_RULES_TEXT,
             typespec=Sequence[str],
-            default=(),
+            default=default_rules_text,
             help="mitmwall: Additional allow rules in TOML format",
         )
         LOGGER.info("addon loaded")
@@ -313,12 +324,15 @@ class Mitmwall:
         """
 
         self.reload_rules()
+        self._startup_done = True
 
     def configure(self, _updated: set[str]) -> None:
         """
-        Reload rules after mitmproxy configuration changes.
+        Persist the rules text option to disk and reload rules.
         """
 
+        if OPTION_RULES_TEXT in _updated and self._startup_done:
+            self._persist_rules_text()
         self.reload_rules()
 
     def is_allow_all_traffic(self) -> bool:
@@ -337,6 +351,26 @@ class Mitmwall:
         if not value:
             return None
         return "\n".join(value)
+
+    def _persist_rules_text(self) -> None:
+        """
+        Write the current rules_text option to the web rules file on disk.
+        Invalid rules text is rejected so a malformed option cannot break
+        the running rule set.
+        """
+
+        rules_text = self.get_rules_text()
+        if rules_text:
+            try:
+                _ = parse_rules_text(rules_text)
+            except Exception as exc:
+                LOGGER.error(f"failed to validate rules text: {exc}")
+                return
+            _ = WEB_RULES_FILE.write_text(rules_text, encoding="utf-8")
+        else:
+            _ = WEB_RULES_FILE.write_text(
+                "# no custom rules from mitmweb\n", encoding="utf-8"
+            )
 
     def apply_addon_config(self, addon_config: AddonConfig) -> None:
         """
@@ -382,8 +416,7 @@ class Mitmwall:
 
     def reload_rules(self) -> None:
         """
-        Load rules from disk and from the dynamic rules text option.
-        Dynamic rules have the highest priority.
+        Load rules from disk.
         """
 
         disk_rules: list[DomainRule] = []
@@ -391,21 +424,12 @@ class Mitmwall:
             disk_rules = load_rules()
         except Exception as exc:
             LOGGER.error(f"failed to load {RULES_DIR}: {exc}")
-
-        dynamic_rules: list[DomainRule] = []
-        rules_text = self.get_rules_text()
-        if rules_text:
-            try:
-                dynamic_rules = parse_rules_text(rules_text)
-            except Exception as exc:
-                LOGGER.error(f"failed to parse dynamic rules: {exc}")
-
-        all_rules = dynamic_rules + disk_rules
+            return
 
         rule_descriptions = tuple(
-            describe_rule(index, rule) for index, rule in enumerate(all_rules, start=1)
+            describe_rule(index, rule) for index, rule in enumerate(disk_rules, start=1)
         )
-        self.rules = all_rules
+        self.rules = disk_rules
 
         if rule_descriptions == self.rule_descriptions:
             return
@@ -413,15 +437,7 @@ class Mitmwall:
         self.rule_descriptions = rule_descriptions
         for description in self.rule_descriptions:
             LOGGER.info(description)
-        if dynamic_rules and disk_rules:
-            LOGGER.info(
-                f"loaded {len(self.rules)} allow rule(s) "
-                + f"({len(dynamic_rules)} dynamic, {len(disk_rules)} from {RULES_DIR})"
-            )
-        elif dynamic_rules:
-            LOGGER.info(f"loaded {len(self.rules)} dynamic allow rule(s)")
-        else:
-            LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_DIR}")
+        LOGGER.info(f"loaded {len(self.rules)} allow rule(s) from {RULES_DIR}")
 
     def request(self, flow: FlowLike) -> None:
         """
