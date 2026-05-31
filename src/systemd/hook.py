@@ -7,6 +7,7 @@ bypass rules.  Called by the systemd unit as ExecStartPre (start) and
 ExecStopPost (stop).
 """
 
+import ipaddress
 import subprocess
 import sys
 from pathlib import Path
@@ -1018,10 +1019,14 @@ def is_ipv4_network(network: str) -> bool:
     """
     Return whether a network string represents an IPv4 network.
 
-    IPv6 networks contain at least one colon; all others are treated as IPv4.
+    Uses ``ipaddress.ip_network`` to parse and classify the address so that
+    malformed strings are rejected rather than silently forwarded to iptables.
     """
 
-    return ":" not in network
+    try:
+        return ipaddress.ip_network(network, strict=False).version == 4
+    except ValueError:
+        return False
 
 
 def find_drop_line_number(result: subprocess.CompletedProcess[str]) -> str | None:

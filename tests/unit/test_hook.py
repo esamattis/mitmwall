@@ -105,6 +105,20 @@ class IsIPv4NetworkTests(unittest.TestCase):
 
         self.assertFalse(hook.is_ipv4_network("2001:db8::/32"))
 
+    def test_ipv4_mapped_ipv6(self) -> None:
+        """
+        An IPv4-mapped IPv6 address is identified as IPv6.
+        """
+
+        self.assertFalse(hook.is_ipv4_network("::ffff:192.168.1.0/24"))
+
+    def test_garbage_string(self) -> None:
+        """
+        A malformed string that is neither IPv4 nor IPv6 returns False.
+        """
+
+        self.assertFalse(hook.is_ipv4_network("not-a-network"))
+
 
 class FindDropLineNumberTests(unittest.TestCase):
     """
