@@ -920,8 +920,6 @@ def add_rules() -> None:
     Install the full transparent proxy firewall policy.
     """
 
-    ensure_web_rules_file()
-
     enable_forwarding()
 
     add_redirect_rule("iptables", 80)
@@ -1172,6 +1170,7 @@ def main() -> None:
 
     action = sys.argv[1]
     if action == "start":
+        ensure_web_rules_file()
         add_rules()
     elif action == "stop":
         clear_rules()
