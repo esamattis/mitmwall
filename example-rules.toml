@@ -2,6 +2,13 @@
 # Installed to /etc/mitmwall/rules.d/5-examples.toml.
 # All outbound HTTP/HTTPS traffic is blocked unless it matches an [[allow]] rule.
 #
+# ─── Overview ─────────────────────────────────────────────────────────────────
+#
+# Rules are stored as TOML files in /etc/mitmwall/rules.d. Each `*.toml` file
+# can contain zero or more `[[allow]]` tables. Traffic is blocked unless the
+# request hostname, HTTP method, and optional pathname filter match at least one
+# allow rule. Files are loaded in alphabetical filename order.
+#
 # ─── Syntax ───────────────────────────────────────────────────────────────────
 #
 # [[allow]]
@@ -10,37 +17,125 @@
 # include_subdomains = true         # Also match *.example.com (default: false).
 # methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
 #                                   # Use methods = "ANY" to allow all methods.
-# inject_headers = [                     # Add or replace upstream request headers.
+#
+# pathname_pattern = "/api/:ver/upload"  # URL pathname filter (optional).
+#                                         # Matches only the path, not ?query or #fragment.
+#                                         # May be a single string or an array of patterns.
+# pathname_regex = '^/files/.*$'         # Python regex pathname filter (optional).
+#                                         # Also matched only against the path.
+#                                         # May be a single string or an array of patterns.
+#
+# # Add or replace upstream request headers.
+# inject_headers = [
 #   { name = "Authorization", value = "Secret" },
 #   { name = "X-Trace-Id", value = "example" },
 # ]
-# pathname_pattern = "/api/:ver/upload"  # URLPattern-style path filter (optional).
-#                                         # May be a single string or an array of patterns.
-# pathname_regex = '^/files/.*$'         # Python regex path filter (optional).
-#                                         # May be a single string or an array of patterns.
 #
 # [[allow]]
 # domain_regex = '(^|\.)example\.(com|org)$'  # Python regex for hostname (required*).
-#                                   # May be a single string or an array of patterns.
+#                                              # May be a single string or an array of patterns.
 # methods = "ANY"
 #
-# ─── Key rules ────────────────────────────────────────────────────────────────
+# ─── Rule constraints ─────────────────────────────────────────────────────────
 #
-# * Each [[allow]] must have exactly one of `domain` or `domain_regex`.
+# * Each `[[allow]]` must have exactly one of `domain` or `domain_regex`.
 # * `include_subdomains` is only valid with `domain`.
 # * `pathname_regex` and `pathname_pattern` may both be set; a request matches
 #   if it satisfies any of the configured pathname filters.
 # * `inject_headers` must be a non-empty list of
 #   { name = "Header-Name", value = "..." } tables.
-#   Matching rules add or replace those request headers before the upstream request.
-#   If multiple rules match, headers come from the first matching rule that
-#   defines `inject_headers`; they are not merged across matching rules.
+# * Unknown keys are rejected.
+#
+# ─── Matching behavior ────────────────────────────────────────────────────────
+#
 # * `domain_regex` is matched case-insensitively (partial match).
 # * `pathname_regex` need only match part of the pathname (partial match).
-# * `pathname_pattern` must match the entire pathname (full match); supports
-#   :param (one segment), *wildcard (multiple segments), and {optional} groups.
-# * Hostnames are normalized (trimmed, trailing dot removed, lowercased).
-# * Unknown keys are rejected.
+# * `pathname_pattern` must match the entire pathname (full match) and supports:
+#   - matching is done against the URL pathname only
+#   - query strings (`?foo=bar`) and fragments (`#section`) are ignored
+#   - for example, `/search?q=test` is matched as pathname `/search`
+#   - `:param` — matches exactly one path segment (no `/`).
+#   - `*wildcard` — matches one or more characters (spans `/`).
+#   - `{optional}` — optional group of tokens.
+# * Hostnames are normalized before matching (trimmed, trailing dot removed,
+#   lowercased).
+# * Exact `domain` rules do not match subdomains unless `include_subdomains = true`.
+# * Methods are normalized (trimmed, uppercased).
+# * `inject_headers` adds or replaces each listed request header before the
+#   upstream request is sent.
+# * If multiple rules match, `inject_headers` is taken from the first matching
+#   rule that defines it. Headers are not merged across matching rules.
+#
+# ─── Examples ─────────────────────────────────────────────────────────────────
+#
+# # Exact domain only: allows GET and HEAD to github.com, but not api.github.com.
+# [[allow]]
+# domain = "github.com"
+#
+# # Domain and all subdomains: allows GET and HEAD to example.com and *.example.com.
+# [[allow]]
+# domain = "example.com"
+# include_subdomains = true
+#
+# # Method-restricted rule: allows only GET requests to pie.dev.
+# [[allow]]
+# domain = "pie.dev"
+# methods = ["GET"]
+#
+# # Allow every HTTP method for a matching host.
+# [[allow]]
+# domain = "webhook.example.com"
+# methods = "ANY"
+#
+# # Add multiple headers to a specific upstream endpoint.
+# [[allow]]
+# domain = "pie.dev"
+# pathname_pattern = "/headers"
+# methods = ["GET"]
+# inject_headers = [
+#   { name = "Authorization", value = "Secret" },
+#   { name = "X-Mitmwall-Test", value = "enabled" },
+# ]
+#
+# # Query strings are not part of pathname_pattern matching.
+# # This allows GET https://pie.dev/headers?x=1 because the pathname is /headers.
+# [[allow]]
+# domain = "pie.dev"
+# pathname_pattern = "/headers"
+# methods = ["GET"]
+#
+# # Allow `git pull` and `git push` for `esamattis`
+# [[allow]]
+# domain = "github.com"
+# methods = ["POST"]
+# pathname_pattern = [
+#     "/esamattis/:repo.git/git-upload-pack", # pull
+#     "/esamattis/:repo.git/git-receive-pack", # push
+# ]
+#
+# # Python regex, compiled case-insensitively against the normalized hostname.
+# [[allow]]
+# domain_regex = '(^|\.)ipinfo\.io$'
+#
+# # Multiple exact hostnames in a single rule.
+# [[allow]]
+# domain = ["registry.npmjs.org", "registry.yarnpkg.com"]
+#
+# # Multiple regex patterns in a single rule.
+# [[allow]]
+# domain_regex = ['(^|\.)npmjs\.org$', '(^|\.)yarnpkg\.com$']
+#
+# # Multiple pathname patterns — matches if any pattern matches.
+# [[allow]]
+# domain = "example.com"
+# pathname_pattern = ["/api/v1/:resource", "/api/v2/:resource"]
+# methods = ["GET"]
+#
+# # Multiple pathname regexes — matches if any regex matches.
+# [[allow]]
+# domain = "example.com"
+# pathname_regex = ['^/static/.*$', '^/assets/.*$']
+# methods = ["GET"]
 #
 # ──────────────────────────────────────────────────────────────────────────────
 
