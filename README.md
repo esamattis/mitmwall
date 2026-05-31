@@ -36,7 +36,7 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
         or `ntp` are left able to perform NTP synchronization on UDP/123 and
         direct DNS queries on UDP/TCP 53
   - drop other new outbound traffic so applications cannot bypass the proxies
-- The mitmproxy addon in `/opt/mitmwall/src/main.py` loads TOML files
+- The mitmproxy addon in ` src/addon` loads TOML files
   from `/etc/mitmwall/rules.d` and:
   - kills HTTP(S) flows whose host, method, and pathname do not match the
     allowlist
