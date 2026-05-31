@@ -99,7 +99,7 @@ class AddonConfigTests(unittest.TestCase):
 
     def test_parse_addon_config_accepts_iptables_key(self) -> None:
         """
-        Accept the iptables top-level key used by custom_iptables.py.
+        Accept the iptables top-level key used by hook.py.
         """
 
         addon_config = parse_addon_config(

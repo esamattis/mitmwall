@@ -149,11 +149,11 @@ chown "$user" "$mitmproxy_confdir" "$mitmweb_config_file"
 chmod 0700 "$mitmproxy_confdir"
 chmod 0600 "$mitmweb_config_file"
 
-# Install the helper scripts used by systemd. iptables.sh is run as privileged
+# Install the helper scripts used by systemd. hook.py is run as privileged
 # ExecStartPre/ExecStopPost hooks, while start.sh launches mitmweb in transparent
 # HTTP(S) mode and DNS mode as the unprivileged mitmwall user.
 info "installing service helper scripts into $optdir"
-install -m 0755 "$scriptdir/iptables.sh" "$scriptdir/start.sh" "$scriptdir/src/systemd/custom_iptables.py" "$optdir/"
+install -m 0755 "$scriptdir/src/systemd/hook.py" "$scriptdir/start.sh" "$optdir/"
 
 # Install the mitmproxy addon package that enforces the allow/block rules.
 # Remove the previous single-file addon path and any old package directory so
@@ -188,9 +188,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$user
-ExecStartPre=+$optdir/iptables.sh add
+ExecStartPre=+$optdir/hook.py add
 ExecStart=$optdir/start.sh
-ExecStopPost=+$optdir/iptables.sh clear
+ExecStopPost=+$optdir/hook.py clear
 Restart=on-failure
 
 [Install]

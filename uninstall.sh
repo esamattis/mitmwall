@@ -57,15 +57,8 @@ fi
 
 # Clear firewall rules directly as well. This keeps uninstall useful if the
 # service was not running, was already removed, or failed before ExecStopPost.
-iptables_helper=
-if [ -x "$optdir/iptables.sh" ]; then
-    iptables_helper=$optdir/iptables.sh
-elif [ -x "$scriptdir/iptables.sh" ]; then
-    iptables_helper=$scriptdir/iptables.sh
-fi
-
-if [ -n "$iptables_helper" ]; then
-    "$iptables_helper" clear || warn "failed to clear mitmwall firewall rules"
+if [ -x "$optdir/hook.py" ]; then
+    "$optdir/hook.py" clear || warn "failed to clear mitmwall firewall rules"
 else
     warn "iptables helper not found; skipping firewall cleanup"
 fi

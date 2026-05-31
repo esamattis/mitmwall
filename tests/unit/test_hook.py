@@ -1,5 +1,5 @@
 """
-Unit tests for the custom iptables rule manager.
+Unit tests for the mitmwall iptables hook.
 """
 
 import subprocess
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.systemd import custom_iptables
+from src.systemd import hook
 
 
 class ParseCustomRulesTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class ParseCustomRulesTests(unittest.TestCase):
         A missing config file yields no custom rules.
         """
 
-        rules = custom_iptables.parse_custom_rules(Path("/nonexistent/config.toml"))
+        rules = hook.parse_custom_rules(Path("/nonexistent/config.toml"))
         self.assertEqual(rules, [])
 
     def test_valid_iptables_bypass_rules(self) -> None:
@@ -42,7 +42,7 @@ port = 443
             path = Path(file.name)
 
         try:
-            rules = custom_iptables.parse_custom_rules(path)
+            rules = hook.parse_custom_rules(path)
             self.assertEqual(rules, [("192.168.5.0/24", 1234), ("2001:db8::/32", 443)])
         finally:
             path.unlink()
@@ -57,7 +57,7 @@ port = 443
             path = Path(file.name)
 
         try:
-            rules = custom_iptables.parse_custom_rules(path)
+            rules = hook.parse_custom_rules(path)
             self.assertEqual(rules, [])
         finally:
             path.unlink()
@@ -80,7 +80,7 @@ port = 8080
             path = Path(file.name)
 
         try:
-            rules = custom_iptables.parse_custom_rules(path)
+            rules = hook.parse_custom_rules(path)
             self.assertEqual(rules, [("192.168.2.0/24", 8080)])
         finally:
             path.unlink()
@@ -96,14 +96,14 @@ class IsIPv4NetworkTests(unittest.TestCase):
         A dotted-decimal network is identified as IPv4.
         """
 
-        self.assertTrue(custom_iptables.is_ipv4_network("192.168.0.0/16"))
+        self.assertTrue(hook.is_ipv4_network("192.168.0.0/16"))
 
     def test_ipv6_network(self) -> None:
         """
         A colon-containing network is identified as IPv6.
         """
 
-        self.assertFalse(custom_iptables.is_ipv4_network("2001:db8::/32"))
+        self.assertFalse(hook.is_ipv4_network("2001:db8::/32"))
 
 
 class FindDropLineNumberTests(unittest.TestCase):
@@ -123,7 +123,7 @@ num  target     prot opt source               destination
 3    DROP       all  --  anywhere             anywhere
 """
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
-        self.assertEqual(custom_iptables.find_drop_line_number(result), "3")
+        self.assertEqual(hook.find_drop_line_number(result), "3")
 
     def test_returns_none_when_no_drop(self) -> None:
         """
@@ -135,7 +135,7 @@ num  target     prot opt source               destination
 1    ACCEPT     all  --  anywhere             anywhere
 """
         result = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
-        self.assertIsNone(custom_iptables.find_drop_line_number(result))
+        self.assertIsNone(hook.find_drop_line_number(result))
 
 
 class AddRuleTests(unittest.TestCase):
@@ -143,7 +143,7 @@ class AddRuleTests(unittest.TestCase):
     Verify add_rule inserts custom rules into an iptables chain.
     """
 
-    @patch("src.systemd.custom_iptables.subprocess.run")
+    @patch("src.systemd.hook.subprocess.run")
     def test_inserts_before_drop(self, mock_run: MagicMock) -> None:
         """
         The rule is inserted before the DROP rule when one exists.
@@ -156,7 +156,7 @@ class AddRuleTests(unittest.TestCase):
         )
         mock_run.return_value = list_result
 
-        custom_iptables.add_rule(["iptables"], "MITMWALL_OUTPUT", "10.0.0.0/8", 9090)
+        hook.add_rule("iptables", "MITMWALL_OUTPUT", "10.0.0.0/8", 9090)
 
         calls = mock_run.call_args_list
         self.assertEqual(calls[-1][0][0], [
@@ -180,7 +180,7 @@ class AddRuleTests(unittest.TestCase):
             "ACCEPT",
         ])
 
-    @patch("src.systemd.custom_iptables.subprocess.run")
+    @patch("src.systemd.hook.subprocess.run")
     def test_appends_when_no_drop(self, mock_run: MagicMock) -> None:
         """
         The rule is appended when no DROP rule is found.
@@ -193,7 +193,7 @@ class AddRuleTests(unittest.TestCase):
         )
         mock_run.return_value = list_result
 
-        custom_iptables.add_rule(["iptables"], "MITMWALL_OUTPUT", "10.0.0.0/8", 9090)
+        hook.add_rule("iptables", "MITMWALL_OUTPUT", "10.0.0.0/8", 9090)
 
         calls = mock_run.call_args_list
         self.assertEqual(calls[-1][0][0], [
@@ -222,7 +222,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
     Verify removal of custom rules from an iptables chain.
     """
 
-    @patch("src.systemd.custom_iptables.subprocess.run")
+    @patch("src.systemd.hook.subprocess.run")
     def test_removes_rules_with_comment(self, mock_run: MagicMock) -> None:
         """
         Rules tagged with the mitmwall-custom comment are removed by line number.
@@ -238,7 +238,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
 
         mock_run.side_effect = [list_result, delete_result, empty_list]
 
-        custom_iptables.remove_custom_rules_from_chain(["iptables"], "MITMWALL_OUTPUT")
+        hook.remove_custom_rules_from_chain("iptables", "MITMWALL_OUTPUT")
 
         delete_call = mock_run.call_args_list[1]
         self.assertEqual(delete_call[0][0], [
@@ -250,7 +250,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
             "1",
         ])
 
-    @patch("src.systemd.custom_iptables.subprocess.run")
+    @patch("src.systemd.hook.subprocess.run")
     def test_handles_missing_chain(self, mock_run: MagicMock) -> None:
         """
         Removal stops gracefully when the chain does not exist.
@@ -262,19 +262,19 @@ class RemoveCustomRulesTests(unittest.TestCase):
             stderr="No chain/target/match by that name",
         )
 
-        custom_iptables.remove_custom_rules_from_chain(["iptables"], "MITMWALL_OUTPUT")
+        hook.remove_custom_rules_from_chain("iptables", "MITMWALL_OUTPUT")
 
         self.assertEqual(mock_run.call_count, 1)
 
 
-class AddRulesTests(unittest.TestCase):
+class AddCustomRulesTests(unittest.TestCase):
     """
-    Verify add_rules orchestrates config parsing and iptables insertion.
+    Verify add_custom_rules orchestrates config parsing and iptables insertion.
     """
 
-    @patch("src.systemd.custom_iptables.clear_rules")
-    @patch("src.systemd.custom_iptables.add_rule")
-    @patch("src.systemd.custom_iptables.parse_custom_rules")
+    @patch("src.systemd.hook.clear_custom_rules")
+    @patch("src.systemd.hook.add_rule")
+    @patch("src.systemd.hook.parse_custom_rules")
     def test_adds_ipv4_and_ipv6_rules(
         self,
         mock_parse: MagicMock,
@@ -290,16 +290,16 @@ class AddRulesTests(unittest.TestCase):
             ("2001:db8::/32", 443),
         ]
 
-        custom_iptables.add_rules()
+        hook.add_custom_rules()
 
         mock_clear.assert_called_once()
         self.assertEqual(mock_add.call_count, 2)
-        mock_add.assert_any_call(["iptables"], "MITMWALL_OUTPUT", "192.168.0.0/16", 80)
-        mock_add.assert_any_call(["ip6tables"], "MITMWALL_OUTPUT", "2001:db8::/32", 443)
+        mock_add.assert_any_call("iptables", "MITMWALL_OUTPUT", "192.168.0.0/16", 80)
+        mock_add.assert_any_call("ip6tables", "MITMWALL_OUTPUT", "2001:db8::/32", 443)
 
-    @patch("src.systemd.custom_iptables.clear_rules")
-    @patch("src.systemd.custom_iptables.add_rule")
-    @patch("src.systemd.custom_iptables.parse_custom_rules")
+    @patch("src.systemd.hook.clear_custom_rules")
+    @patch("src.systemd.hook.add_rule")
+    @patch("src.systemd.hook.parse_custom_rules")
     def test_no_rules_when_config_empty(
         self,
         mock_parse: MagicMock,
@@ -312,28 +312,28 @@ class AddRulesTests(unittest.TestCase):
 
         mock_parse.return_value = []
 
-        custom_iptables.add_rules()
+        hook.add_custom_rules()
 
         mock_clear.assert_not_called()
         mock_add.assert_not_called()
 
 
-class ClearRulesTests(unittest.TestCase):
+class ClearCustomRulesTests(unittest.TestCase):
     """
-    Verify clear_rules orchestrates removal from both iptables and ip6tables.
+    Verify clear_custom_rules orchestrates removal from both iptables and ip6tables.
     """
 
-    @patch("src.systemd.custom_iptables.remove_custom_rules_from_chain")
+    @patch("src.systemd.hook.remove_custom_rules_from_chain")
     def test_clears_both_chains(self, mock_remove: MagicMock) -> None:
         """
-        clear_rules removes custom rules from IPv4 and IPv6 chains.
+        clear_custom_rules removes custom rules from IPv4 and IPv6 chains.
         """
 
-        custom_iptables.clear_rules()
+        hook.clear_custom_rules()
 
         self.assertEqual(mock_remove.call_count, 2)
-        mock_remove.assert_any_call(["iptables"], "MITMWALL_OUTPUT")
-        mock_remove.assert_any_call(["ip6tables"], "MITMWALL_OUTPUT")
+        mock_remove.assert_any_call("iptables", "MITMWALL_OUTPUT")
+        mock_remove.assert_any_call("ip6tables", "MITMWALL_OUTPUT")
 
 
 class MainTests(unittest.TestCase):
@@ -341,25 +341,25 @@ class MainTests(unittest.TestCase):
     Verify the script entry point dispatches to the correct actions.
     """
 
-    @patch("src.systemd.custom_iptables.add_rules")
+    @patch("src.systemd.hook.add_rules")
     def test_main_add(self, mock_add: MagicMock) -> None:
         """
         The 'add' argument triggers add_rules.
         """
 
-        with patch("sys.argv", ["custom_iptables.py", "add"]):
-            custom_iptables.main()
+        with patch("sys.argv", ["hook.py", "add"]):
+            hook.main()
 
         mock_add.assert_called_once()
 
-    @patch("src.systemd.custom_iptables.clear_rules")
+    @patch("src.systemd.hook.clear_rules")
     def test_main_clear(self, mock_clear: MagicMock) -> None:
         """
         The 'clear' argument triggers clear_rules.
         """
 
-        with patch("sys.argv", ["custom_iptables.py", "clear"]):
-            custom_iptables.main()
+        with patch("sys.argv", ["hook.py", "clear"]):
+            hook.main()
 
         mock_clear.assert_called_once()
 
@@ -368,9 +368,9 @@ class MainTests(unittest.TestCase):
         Missing argument causes exit code 2.
         """
 
-        with patch("sys.argv", ["custom_iptables.py"]):
+        with patch("sys.argv", ["hook.py"]):
             with self.assertRaises(SystemExit) as context:
-                custom_iptables.main()
+                hook.main()
 
         self.assertEqual(context.exception.code, 2)
 
@@ -379,9 +379,9 @@ class MainTests(unittest.TestCase):
         An invalid argument causes exit code 2.
         """
 
-        with patch("sys.argv", ["custom_iptables.py", "invalid"]):
+        with patch("sys.argv", ["hook.py", "invalid"]):
             with self.assertRaises(SystemExit) as context:
-                custom_iptables.main()
+                hook.main()
 
         self.assertEqual(context.exception.code, 2)
 
