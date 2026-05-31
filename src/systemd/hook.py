@@ -3,8 +3,8 @@
 mitmwall iptables hook for systemd.
 
 Manages the transparent proxy firewall rules and optional custom egress
-bypass rules.  Called by the systemd unit as ExecStartPre (add) and
-ExecStopPost (clear).
+bypass rules.  Called by the systemd unit as ExecStartPre (start) and
+ExecStopPost (stop).
 """
 
 import subprocess
@@ -27,7 +27,7 @@ COMMENT = "mitmwall-custom"
 
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
-# Policy installed by the "add" action:
+# Policy installed by the "start" action:
 # - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
 # - Allow root and the proxy user to make outbound upstream connections.
@@ -158,7 +158,7 @@ def add_redirect_rule(table_cmd: str, dport: int) -> None:
 
 def remove_redirect_rule(table_cmd: str, dport: int) -> None:
     """
-    Remove the transparent HTTP/HTTPS redirects installed by the "add" action.
+    Remove the transparent HTTP/HTTPS redirects installed by the "start" action.
     These redirects capture direct outbound web traffic from non-proxy users and
     send it to the local proxy port.
     """
@@ -311,7 +311,7 @@ def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
 
 def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
     """
-    Remove the DNS redirects installed by the "add" action.
+    Remove the DNS redirects installed by the "start" action.
     """
 
     while True:
@@ -544,7 +544,7 @@ def add_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
 
 def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
     """
-    Remove the NTP DNS bypass rules installed by the "add" action.
+    Remove the NTP DNS bypass rules installed by the "start" action.
     """
 
     for ntp_user in ("systemd-timesync", "_chrony", "ntp"):
@@ -850,7 +850,7 @@ def add_output_filter(table_cmd: str) -> None:
 
 def remove_output_filter(table_cmd: str) -> None:
     """
-    Remove the outbound allowlist/blocklist chain installed by the "add" action.
+    Remove the outbound allowlist/blocklist chain installed by the "start" action.
     That chain allows established/related packets so inbound services such as SSH
     keep working, allows root and the proxy user to reach upstream hosts, allows
     loopback traffic, allows other users to connect to the local HTTP proxy, DNS
@@ -947,7 +947,7 @@ def add_rules() -> None:
 
 def clear_rules() -> None:
     """
-    Remove all firewall rules installed by the "add" action.
+    Remove all firewall rules installed by the "start" action.
     """
 
     clear_custom_rules()
@@ -1158,7 +1158,7 @@ def usage() -> None:
     Print usage information to stderr.
     """
 
-    print(f"usage: {sys.argv[0]} {{add|clear}}", file=sys.stderr)
+    print(f"usage: {sys.argv[0]} {{start|stop}}", file=sys.stderr)
 
 
 def main() -> None:
@@ -1171,9 +1171,9 @@ def main() -> None:
         sys.exit(2)
 
     action = sys.argv[1]
-    if action == "add":
+    if action == "start":
         add_rules()
-    elif action == "clear":
+    elif action == "stop":
         clear_rules()
     else:
         usage()

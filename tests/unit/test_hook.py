@@ -391,23 +391,23 @@ class MainTests(unittest.TestCase):
     """
 
     @patch("src.systemd.hook.add_rules")
-    def test_main_add(self, mock_add: MagicMock) -> None:
+    def test_main_start(self, mock_add: MagicMock) -> None:
         """
-        The 'add' argument triggers add_rules.
+        The 'start' argument triggers add_rules.
         """
 
-        with patch("sys.argv", ["hook.py", "add"]):
+        with patch("sys.argv", ["hook.py", "start"]):
             hook.main()
 
         mock_add.assert_called_once()
 
     @patch("src.systemd.hook.clear_rules")
-    def test_main_clear(self, mock_clear: MagicMock) -> None:
+    def test_main_stop(self, mock_clear: MagicMock) -> None:
         """
-        The 'clear' argument triggers clear_rules.
+        The 'stop' argument triggers clear_rules.
         """
 
-        with patch("sys.argv", ["hook.py", "clear"]):
+        with patch("sys.argv", ["hook.py", "stop"]):
             hook.main()
 
         mock_clear.assert_called_once()

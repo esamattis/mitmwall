@@ -188,9 +188,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=$user
-ExecStartPre=+$optdir/hook.py add
+ExecStartPre=+$optdir/hook.py start
 ExecStart=$optdir/start.sh
-ExecStopPost=+$optdir/hook.py clear
+ExecStopPost=+$optdir/hook.py stop
 Restart=on-failure
 
 [Install]
