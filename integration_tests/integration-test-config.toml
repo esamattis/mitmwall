@@ -3,12 +3,12 @@
 
 # Allow direct TCP connections to Google Public DNS on port 443 for integration
 # testing of custom iptables rule support.
-[[iptables.allow]]
+[[iptables.bypass]]
 network = "8.8.8.8"
 port = 443
 
 
 # hostcmd with lima https://github.com/esamattis/hostcmd
-[[iptables.allow]]
+[[iptables.bypass]]
 network = "192.168.5.0/24"
 port = 48483

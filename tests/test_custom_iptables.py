@@ -24,18 +24,18 @@ class ParseCustomRulesTests(unittest.TestCase):
         rules = custom_iptables.parse_custom_rules(Path("/nonexistent/config.toml"))
         self.assertEqual(rules, [])
 
-    def test_valid_iptables_allow_rules(self) -> None:
+    def test_valid_iptables_bypass_rules(self) -> None:
         """
-        Parse IPv4 and IPv6 allow rules from a well-formed config file.
+        Parse IPv4 and IPv6 bypass rules from a well-formed config file.
         """
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
             _ = file.write("""
-[[iptables.allow]]
+[[iptables.bypass]]
 network = "192.168.5.0/24"
 port = 1234
 
-[[iptables.allow]]
+[[iptables.bypass]]
 network = "2001:db8::/32"
 port = 443
 """)
@@ -62,18 +62,18 @@ port = 443
         finally:
             path.unlink()
 
-    def test_malformed_allow_entries_are_skipped(self) -> None:
+    def test_malformed_bypass_entries_are_skipped(self) -> None:
         """
         Entries missing network or port are ignored.
         """
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
             _ = file.write("""
-[[iptables.allow]]
+[[iptables.bypass]]
 network = "192.168.1.0/24"
 port = "not-an-int"
 
-[[iptables.allow]]
+[[iptables.bypass]]
 network = "192.168.2.0/24"
 port = 8080
 """)

@@ -2,7 +2,7 @@
 """
 Custom iptables rule manager for mitmwall.
 
-Reads /etc/mitmwall/config.toml and manages additional egress allow rules
+Reads /etc/mitmwall/config.toml and manages additional egress bypass rules
 in the MITMWALL_OUTPUT chain so operators can permit traffic to specific
 networks and ports without maintaining a separate firewall script.
 """
@@ -38,11 +38,11 @@ def run_ip6tables(*args: str) -> subprocess.CompletedProcess[str]:
 
 def parse_custom_rules(config_path: Path = CONFIG_PATH) -> list[tuple[str, int]]:
     """
-    Parse custom iptables allow rules from a TOML config file.
+    Parse custom iptables bypass rules from a TOML config file.
 
-    Returns a list of (network, port) tuples for each [[iptables.allow]]
+    Returns a list of (network, port) tuples for each [[iptables.bypass]]
     entry.  If the file does not exist, the iptables key is missing, or
-    the allow table is malformed, an empty list is returned.
+    the bypass table is malformed, an empty list is returned.
     """
 
     if not config_path.exists():
@@ -58,13 +58,13 @@ def parse_custom_rules(config_path: Path = CONFIG_PATH) -> list[tuple[str, int]]
     if not is_toml_table(iptables_value):
         return []
 
-    allow_value = iptables_value.get("allow")
-    if not isinstance(allow_value, list):
+    bypass_value = iptables_value.get("bypass")
+    if not isinstance(bypass_value, list):
         return []
 
-    allow_rules = cast(list[object], allow_value)
+    bypass_rules = cast(list[object], bypass_value)
     rules: list[tuple[str, int]] = []
-    for rule in allow_rules:
+    for rule in bypass_rules:
         if not is_toml_table(rule):
             continue
         network = rule.get("network")
@@ -148,7 +148,7 @@ def add_rule(
 
 def add_rules() -> None:
     """
-    Read the config and insert all custom allow rules into MITMWALL_OUTPUT.
+    Read the config and insert all custom bypass rules into MITMWALL_OUTPUT.
 
     Existing custom rules are cleared first so repeated runs are idempotent.
     """
@@ -202,7 +202,7 @@ def remove_custom_rules_from_chain(table_cmd: list[str], chain: str) -> None:
 
 def clear_rules() -> None:
     """
-    Remove all custom allow rules previously inserted by add_rules().
+    Remove all custom bypass rules previously inserted by add_rules().
     """
 
     remove_custom_rules_from_chain(["iptables"], CHAIN)

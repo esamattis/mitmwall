@@ -301,10 +301,10 @@ flow_history_clear_interval = 1000
 # flow history entries.
 flow_history_keep_entries = 500
 
-# Custom iptables allow rules for non-HTTP(S) traffic.
-# These are applied to the MITMWALL_OUTPUT chain on service start.
-# IPv4 rules use iptables, IPv6 rules use ip6tables.
-# [[iptables.allow]]
+# Custom iptables bypass rules. Allow some IP ranges or ports to bypass the
+# firewall and proxy. Bypassed traffic will not be visible in mitmweb and will
+# not be subject to the addon rules.
+# [[iptables.bypass]]
 # network = "192.168.5.0/24"
 # port = 1234
 ```
