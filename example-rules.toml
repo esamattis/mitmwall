@@ -17,6 +17,7 @@
 # include_subdomains = true         # Also match *.example.com (default: false).
 # methods = ["GET", "POST"]         # Allowed HTTP methods (default: ["GET", "HEAD"]).
 #                                   # Use methods = "ANY" to allow all methods.
+# stream = true                     # Force response to be treated as a stream (default: false).
 #
 # pathname_pattern = "/api/:ver/upload"  # URL pathname filter (optional).
 #                                         # Matches only the path, not ?query or #fragment.
@@ -136,6 +137,18 @@
 # domain = "example.com"
 # pathname_regex = ['^/static/.*$', '^/assets/.*$']
 # methods = ["GET"]
+#
+# # Force streaming for chatgpt.com because it does not properly set the
+# Content-Type: text/event-stream header. mitmproxy relies on this header to
+# determine whether to treat a response as a stream.
+# [[allow]]
+# domain = "chatgpt.com"
+# methods = ["POST"]
+# pathname_pattern = "/backend-api/codex/responses"
+# stream = true
+# [[allow]]
+# domain = "chatgpt.com"
+# include_subdomains = true
 #
 # ──────────────────────────────────────────────────────────────────────────────
 
