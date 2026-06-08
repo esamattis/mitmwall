@@ -220,12 +220,21 @@ class RequestLike(Protocol):
     headers: HeadersLike
 
 
+class ResponseLike(Protocol):
+    """
+    Subset of mitmproxy HTTP response behavior used by the addon.
+    """
+
+    stream: bool
+
+
 class FlowLike(Protocol):
     """
     Subset of mitmproxy HTTP flow behavior used by the addon.
     """
 
     request: RequestLike
+    response: ResponseLike | None
 
     def kill(self) -> None:
         """
@@ -555,6 +564,7 @@ class Mitmwall:
                     allowed=True,
                     rule_name=rule.name,
                     inject_headers=rule.inject_headers,
+                    stream=rule.stream,
                 )
 
         if first_match is not None:
@@ -562,8 +572,26 @@ class Mitmwall:
                 allowed=True,
                 rule_name=first_match.name,
                 inject_headers=first_match.inject_headers,
+                stream=first_match.stream,
             )
         return MatchResult(allowed=False)
+
+    def responseheaders(self, flow: FlowLike) -> None:
+        """
+        Enable response streaming for rules that set stream=true.
+        """
+
+        host = flow.request.pretty_host or flow.request.host
+        method = flow.request.method
+        url = flow.request.pretty_url
+        pathname = request_pathname(url)
+        result = self.is_allowed(host, method, pathname)
+        if result.allowed and result.stream:
+            if flow.response is not None:
+                flow.response.stream = True
+                LOGGER.debug(
+                    f"streaming enabled host={host} method={method} rule={result.rule_name}"
+                )
 
 
 addons = [Mitmwall()]

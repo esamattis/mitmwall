@@ -31,4 +31,5 @@ ALLOW_RULE_KEYS = {
     "methods",
     "pathname_regex",
     "pathname_pattern",
+    "stream",
 }

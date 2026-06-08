@@ -37,6 +37,7 @@ class MatchResult:
     allowed: bool
     rule_name: str | None = None
     inject_headers: tuple[InjectedHeader, ...] = ()
+    stream: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,7 @@ class DomainRule:
     methods: tuple[str, ...]
     pathname_filters: tuple[PathnameFilter, ...] = ()
     inject_headers: tuple[InjectedHeader, ...] = ()
+    stream: bool = False
 
     def matches_host(self, host: str) -> bool:
         """
@@ -405,6 +407,11 @@ def parse_rules_text(text: str) -> list[DomainRule]:
         methods = parse_methods(rule, index)
         pathname_filters = parse_pathname_filters(rule, index)
         inject_headers = parse_inject_headers(rule, index)
+        stream = rule.get("stream", False)
+        if not isinstance(stream, bool):
+            raise ValueError(
+                f"allow rule #{index}: 'stream' must be a boolean"
+            )
 
         if has_domain:
             validate_allowed_keys(
@@ -416,6 +423,7 @@ def parse_rules_text(text: str) -> list[DomainRule]:
                     "methods",
                     "pathname_regex",
                     "pathname_pattern",
+                    "stream",
                 },
                 index,
             )
@@ -434,6 +442,7 @@ def parse_rules_text(text: str) -> list[DomainRule]:
                     methods=methods,
                     pathname_filters=pathname_filters,
                     inject_headers=inject_headers,
+                    stream=stream,
                 )
             )
         else:
@@ -445,6 +454,7 @@ def parse_rules_text(text: str) -> list[DomainRule]:
                     "methods",
                     "pathname_regex",
                     "pathname_pattern",
+                    "stream",
                 },
                 index,
             )
@@ -458,6 +468,7 @@ def parse_rules_text(text: str) -> list[DomainRule]:
                     methods=methods,
                     pathname_filters=pathname_filters,
                     inject_headers=inject_headers,
+                    stream=stream,
                 )
             )
 
@@ -506,6 +517,9 @@ def describe_rule(index: int, rule: DomainRule) -> str:
     if rule.inject_headers:
         header_names = [header.name for header in rule.inject_headers]
         parts.append(f"inject_header_names={header_names!r}")
+
+    if rule.stream:
+        parts.append("stream=True")
 
     return " ".join(parts)
 

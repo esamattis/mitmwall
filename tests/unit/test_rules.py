@@ -20,6 +20,7 @@ from src.addon.addon import (
     HeadersLike,
     Mitmwall,
     RequestLike,
+    ResponseLike,
     trim_mitmproxy_view_flow_history,
 )
 from src.addon.pathname_pattern import compile_pathname_pattern
@@ -91,12 +92,29 @@ class FakeRequest:
 
 
 @final
+class FakeResponse(ResponseLike):
+    """
+    Minimal response object for addon unit tests.
+    """
+
+    stream: bool
+
+    def __init__(self) -> None:
+        """
+        Initialize a fake response with streaming disabled.
+        """
+
+        self.stream = False
+
+
+@final
 class FakeFlow(FlowLike):
     """
     Minimal flow object for addon unit tests.
     """
 
     request: RequestLike
+    response: ResponseLike | None
     killed: bool
 
     def __init__(self, request: RequestLike) -> None:
@@ -105,6 +123,7 @@ class FakeFlow(FlowLike):
         """
 
         self.request = request
+        self.response = None
         self.killed = False
 
     @override
@@ -233,6 +252,53 @@ domain = "pie.dev"
 inject_header = "Authorization: Secret"
 """.strip()
             )
+
+    def test_parse_rules_file_accepts_stream(self) -> None:
+        """
+        Parse a stream rule into a boolean flag.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain = "pie.dev"
+stream = true
+""".strip()
+        )
+
+        self.assertIsInstance(rule, DomainRule)
+        self.assertTrue(rule.stream)
+
+    def test_parse_rules_file_rejects_non_boolean_stream(self) -> None:
+        """
+        Reject stream values that are not booleans.
+        """
+
+        with self.assertRaisesRegex(ValueError, "must be a boolean"):
+            _rule = self._parse_single_rule(
+                """
+[[allow]]
+domain = "pie.dev"
+stream = "yes"
+""".strip()
+            )
+
+    def test_describe_rule_includes_stream_flag(self) -> None:
+        """
+        Log rule descriptions include the stream flag when enabled.
+        """
+
+        rule = self._parse_single_rule(
+            """
+[[allow]]
+domain = "pie.dev"
+stream = true
+""".strip()
+        )
+
+        description = describe_rule(1, rule)
+
+        self.assertIn("stream=True", description)
 
     def test_describe_rule_redacts_injected_header_values(self) -> None:
         """
@@ -923,6 +989,75 @@ class HeaderInjectionAddonTests(unittest.TestCase):
         self.assertFalse(flow.killed)
         self.assertEqual(flow.request.headers["Authorization"], "Secret")
         self.assertEqual(flow.request.headers["X-Mitmwall-Test"], "enabled")
+
+
+class StreamingAddonTests(unittest.TestCase):
+    """
+    Verify addon behavior when matching rules enable response streaming.
+    """
+
+    def test_responseheaders_enables_streaming_for_matching_rule(self) -> None:
+        """
+        Enable response streaming when a matching rule sets stream=true.
+        """
+
+        addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
+        addon.rules = [
+            DomainRule(
+                name="domain pie.dev",
+                domain=("pie.dev",),
+                include_subdomains=False,
+                methods=("GET",),
+                stream=True,
+            ),
+        ]
+
+        flow = FakeFlow(FakeRequest("pie.dev", "GET", "https://pie.dev/"))
+        flow.response = FakeResponse()
+
+        addon.responseheaders(flow)
+
+        self.assertTrue(flow.response.stream)
+
+    def test_responseheaders_leaves_streaming_disabled_by_default(self) -> None:
+        """
+        Keep response streaming disabled when a matching rule has no stream flag.
+        """
+
+        addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
+        addon.rules = [
+            DomainRule(
+                name="domain pie.dev",
+                domain=("pie.dev",),
+                include_subdomains=False,
+                methods=("GET",),
+            ),
+        ]
+
+        flow = FakeFlow(FakeRequest("pie.dev", "GET", "https://pie.dev/"))
+        flow.response = FakeResponse()
+
+        addon.responseheaders(flow)
+
+        self.assertFalse(flow.response.stream)
+
+    def test_responseheaders_does_nothing_for_blocked_request(self) -> None:
+        """
+        Do not enable streaming when no matching rule allows the request.
+        """
+
+        addon = Mitmwall()
+        addon.is_allow_all_traffic = lambda: False
+        addon.rules = []
+
+        flow = FakeFlow(FakeRequest("blocked.example", "GET", "https://blocked.example/"))
+        flow.response = FakeResponse()
+
+        addon.responseheaders(flow)
+
+        self.assertFalse(flow.response.stream)
 
 
 @final
