@@ -552,28 +552,17 @@ class Mitmwall:
 
         normalized_host = normalize_host(host)
         normalized_method = normalize_method(method)
-        first_match: DomainRule | None = None
         for rule in self.rules:
             if not rule.matches(normalized_host, normalized_method, pathname):
                 continue
 
-            if first_match is None:
-                first_match = rule
-            if rule.inject_headers:
-                return MatchResult(
-                    allowed=True,
-                    rule_name=rule.name,
-                    inject_headers=rule.inject_headers,
-                    stream=rule.stream,
-                )
-
-        if first_match is not None:
             return MatchResult(
                 allowed=True,
-                rule_name=first_match.name,
-                inject_headers=first_match.inject_headers,
-                stream=first_match.stream,
+                rule_name=rule.name,
+                inject_headers=rule.inject_headers,
+                stream=rule.stream,
             )
+
         return MatchResult(allowed=False)
 
     def responseheaders(self, flow: FlowLike) -> None:
