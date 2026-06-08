@@ -7,6 +7,11 @@
 network = "8.8.8.8"
 port = 443
 
+# Test that /32 CIDR notation works for port 443 bypass rules.
+[[iptables.bypass]]
+network = "172.64.155.209/32"
+port = 443
+
 
 # hostcmd with lima https://github.com/esamattis/hostcmd
 [[iptables.bypass]]

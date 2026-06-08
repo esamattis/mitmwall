@@ -479,6 +479,18 @@ class MitmwallNetworkTests(unittest.TestCase):
             "custom iptables rule to 8.8.8.8:443", "8.8.8.8", 443
         )
 
+    def test_custom_iptables_rule_allows_direct_tcp_with_cidr_32(self) -> None:
+        """
+        Verify that a custom iptables bypass rule with /32 CIDR on port 443
+        permits direct TCP connections.
+        """
+
+        self.assert_tcp_allowed(
+            "custom iptables rule to 172.64.155.209/32:443",
+            "172.64.155.209",
+            443,
+        )
+
     def test_direct_dns_queries_to_public_resolver_are_proxied(self) -> None:
         """
         Verify that direct DNS queries are transparently filtered by mitmproxy.

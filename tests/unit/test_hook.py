@@ -281,6 +281,57 @@ class RemoveCustomRulesTests(unittest.TestCase):
         self.assertEqual(mock_run.call_count, 1)
 
 
+class AddNatBypassRuleTests(unittest.TestCase):
+    """
+    Verify add_nat_bypass_rule inserts NAT bypass rules into the OUTPUT chain.
+    """
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_inserts_at_top_when_not_exists(self, mock_run: MagicMock) -> None:
+        """
+        The NAT bypass rule is inserted at the top of OUTPUT when not present.
+        """
+
+        check_result = subprocess.CompletedProcess(args=[], returncode=1, stdout="")
+        mock_run.return_value = check_result
+
+        hook.add_nat_bypass_rule("iptables", "10.0.0.0/8", 443)
+
+        calls = mock_run.call_args_list
+        self.assertEqual(calls[-1][0][0], [
+            "iptables",
+            "-t",
+            "nat",
+            "-I",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "-d",
+            "10.0.0.0/8",
+            "--dport",
+            "443",
+            "-m",
+            "comment",
+            "--comment",
+            "mitmwall-custom",
+            "-j",
+            "ACCEPT",
+        ])
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_skips_when_already_exists(self, mock_run: MagicMock) -> None:
+        """
+        The NAT bypass rule is skipped when it already exists.
+        """
+
+        check_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
+        mock_run.return_value = check_result
+
+        hook.add_nat_bypass_rule("iptables", "10.0.0.0/8", 443)
+
+        self.assertEqual(mock_run.call_count, 1)
+
+
 class AddCustomRulesTests(unittest.TestCase):
     """
     Verify add_custom_rules orchestrates config parsing and iptables insertion.
@@ -288,15 +339,18 @@ class AddCustomRulesTests(unittest.TestCase):
 
     @patch("src.systemd.hook.clear_custom_rules")
     @patch("src.systemd.hook.add_rule")
+    @patch("src.systemd.hook.add_nat_bypass_rule")
     @patch("src.systemd.hook.parse_custom_rules")
     def test_adds_ipv4_and_ipv6_rules(
         self,
         mock_parse: MagicMock,
+        mock_nat: MagicMock,
         mock_add: MagicMock,
         mock_clear: MagicMock,
     ) -> None:
         """
-        IPv4 rules use iptables and IPv6 rules use ip6tables.
+        IPv4 rules use iptables and IPv6 rules use ip6tables, both for NAT
+        bypass and filter ACCEPT.
         """
 
         mock_parse.return_value = [
@@ -307,16 +361,21 @@ class AddCustomRulesTests(unittest.TestCase):
         hook.add_custom_rules()
 
         mock_clear.assert_called_once()
+        self.assertEqual(mock_nat.call_count, 2)
         self.assertEqual(mock_add.call_count, 2)
+        mock_nat.assert_any_call("iptables", "192.168.0.0/16", 80)
+        mock_nat.assert_any_call("ip6tables", "2001:db8::/32", 443)
         mock_add.assert_any_call("iptables", "MITMWALL_OUTPUT", "192.168.0.0/16", 80)
         mock_add.assert_any_call("ip6tables", "MITMWALL_OUTPUT", "2001:db8::/32", 443)
 
     @patch("src.systemd.hook.clear_custom_rules")
     @patch("src.systemd.hook.add_rule")
+    @patch("src.systemd.hook.add_nat_bypass_rule")
     @patch("src.systemd.hook.parse_custom_rules")
     def test_no_rules_when_config_empty(
         self,
         mock_parse: MagicMock,
+        mock_nat: MagicMock,
         mock_add: MagicMock,
         mock_clear: MagicMock,
     ) -> None:
@@ -329,6 +388,7 @@ class AddCustomRulesTests(unittest.TestCase):
         hook.add_custom_rules()
 
         mock_clear.assert_not_called()
+        mock_nat.assert_not_called()
         mock_add.assert_not_called()
 
 
@@ -337,17 +397,20 @@ class ClearCustomRulesTests(unittest.TestCase):
     Verify clear_custom_rules orchestrates removal from both iptables and ip6tables.
     """
 
-    @patch("src.systemd.hook.remove_custom_rules_from_chain")
-    def test_clears_both_chains(self, mock_remove: MagicMock) -> None:
+    @patch("src.systemd.hook.remove_comment_rules")
+    def test_clears_filter_and_nat_chains(self, mock_remove: MagicMock) -> None:
         """
-        clear_custom_rules removes custom rules from IPv4 and IPv6 chains.
+        clear_custom_rules removes custom rules from IPv4 and IPv6 filter and
+        NAT OUTPUT chains.
         """
 
         hook.clear_custom_rules()
 
-        self.assertEqual(mock_remove.call_count, 2)
-        mock_remove.assert_any_call("iptables", "MITMWALL_OUTPUT")
-        mock_remove.assert_any_call("ip6tables", "MITMWALL_OUTPUT")
+        self.assertEqual(mock_remove.call_count, 4)
+        mock_remove.assert_any_call("iptables", "filter", "MITMWALL_OUTPUT")
+        mock_remove.assert_any_call("ip6tables", "filter", "MITMWALL_OUTPUT")
+        mock_remove.assert_any_call("iptables", "nat", "OUTPUT")
+        mock_remove.assert_any_call("ip6tables", "nat", "OUTPUT")
 
 
 class EnsureWebRulesFileTests(unittest.TestCase):
@@ -404,8 +467,9 @@ class MainTests(unittest.TestCase):
     Verify the script entry point dispatches to the correct actions.
     """
 
+    @patch("src.systemd.hook.ensure_web_rules_file")
     @patch("src.systemd.hook.add_rules")
-    def test_main_start(self, mock_add: MagicMock) -> None:
+    def test_main_start(self, mock_add: MagicMock, _mock_ensure: MagicMock) -> None:
         """
         The 'start' argument triggers add_rules.
         """

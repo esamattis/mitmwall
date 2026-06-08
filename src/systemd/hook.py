@@ -1093,6 +1093,60 @@ def add_rule(table_cmd: str, chain: str, network: str, port: int) -> None:
         )
 
 
+def add_nat_bypass_rule(table_cmd: str, network: str, port: int) -> None:
+    """
+    Insert a NAT bypass rule at the top of the OUTPUT chain so traffic to the
+    specified network and port is not redirected to the transparent proxy.
+    """
+
+    check = subprocess.run(
+        [
+            table_cmd,
+            "-t",
+            "nat",
+            "-C",
+            "OUTPUT",
+            "-p",
+            "tcp",
+            "-d",
+            network,
+            "--dport",
+            str(port),
+            "-m",
+            "comment",
+            "--comment",
+            COMMENT,
+            "-j",
+            "ACCEPT",
+        ],
+        capture_output=True,
+    )
+    if check.returncode != 0:
+        _ = subprocess.run(
+            [
+                table_cmd,
+                "-t",
+                "nat",
+                "-I",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "-d",
+                network,
+                "--dport",
+                str(port),
+                "-m",
+                "comment",
+                "--comment",
+                COMMENT,
+                "-j",
+                "ACCEPT",
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+
 def add_custom_rules() -> None:
     """
     Read the config and insert all custom bypass rules into MITMWALL_OUTPUT.
@@ -1108,12 +1162,14 @@ def add_custom_rules() -> None:
 
     for network, port in rules:
         if is_ipv4_network(network):
+            add_nat_bypass_rule("iptables", network, port)
             add_rule("iptables", CHAIN, network, port)
         else:
+            add_nat_bypass_rule("ip6tables", network, port)
             add_rule("ip6tables", CHAIN, network, port)
 
 
-def remove_custom_rules_from_chain(table_cmd: str, chain: str) -> None:
+def remove_comment_rules(table_cmd: str, table: str, chain: str) -> None:
     """
     Remove all rules tagged with the mitmwall-custom comment from a chain.
 
@@ -1123,7 +1179,7 @@ def remove_custom_rules_from_chain(table_cmd: str, chain: str) -> None:
 
     while True:
         result = subprocess.run(
-            [table_cmd, "-t", "filter", "-L", chain, "--line-numbers"],
+            [table_cmd, "-t", table, "-L", chain, "--line-numbers"],
             capture_output=True,
             text=True,
         )
@@ -1136,7 +1192,7 @@ def remove_custom_rules_from_chain(table_cmd: str, chain: str) -> None:
                 parts = line.split()
                 if parts and parts[0].isdigit():
                     _ = subprocess.run(
-                        [table_cmd, "-t", "filter", "-D", chain, parts[0]],
+                        [table_cmd, "-t", table, "-D", chain, parts[0]],
                         capture_output=True,
                         check=True,
                     )
@@ -1147,13 +1203,23 @@ def remove_custom_rules_from_chain(table_cmd: str, chain: str) -> None:
             break
 
 
+def remove_custom_rules_from_chain(table_cmd: str, chain: str) -> None:
+    """
+    Remove all rules tagged with the mitmwall-custom comment from a filter chain.
+    """
+
+    remove_comment_rules(table_cmd, "filter", chain)
+
+
 def clear_custom_rules() -> None:
     """
     Remove all custom bypass rules previously inserted by add_custom_rules().
     """
 
-    remove_custom_rules_from_chain("iptables", CHAIN)
-    remove_custom_rules_from_chain("ip6tables", CHAIN)
+    remove_comment_rules("iptables", "filter", CHAIN)
+    remove_comment_rules("ip6tables", "filter", CHAIN)
+    remove_comment_rules("iptables", "nat", "OUTPUT")
+    remove_comment_rules("ip6tables", "nat", "OUTPUT")
 
 
 def usage() -> None:
