@@ -257,6 +257,240 @@ class XtablesCommandTests(unittest.TestCase):
             hook.remove_redirect_rule("iptables", 443)
 
 
+class ForwardingStateTests(unittest.TestCase):
+    """
+    Verify forwarding sysctl snapshots, guards, and exact restoration.
+    """
+
+    def test_repeated_enable_preserves_snapshot_and_restores_exact_values(self) -> None:
+        """
+        Repeated starts retain the first values and stop restores all of them.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "run" / "mitmwall"
+            state_file = state_dir / "forwarding-state.json"
+            values = {
+                hook.IPV4_FORWARDING: 0,
+                hook.IPV6_FORWARDING: 1,
+                hook.IPV4_SEND_REDIRECTS: 1,
+            }
+
+            def write_value(name: str, value: int) -> None:
+                """Record a simulated sysctl write."""
+
+                values[name] = value
+
+            def read_value(name: str) -> int:
+                """Return a simulated sysctl value."""
+
+                return values[name]
+
+            with (
+                patch("src.systemd.hook.FORWARDING_STATE_DIR", state_dir),
+                patch("src.systemd.hook.FORWARDING_STATE_FILE", state_file),
+                patch(
+                    "src.systemd.hook.read_sysctl",
+                    side_effect=read_value,
+                ) as mock_read,
+                patch("src.systemd.hook.write_sysctl", side_effect=write_value),
+                patch("src.systemd.hook.add_forwarding_guards") as mock_add_guards,
+                patch(
+                    "src.systemd.hook.remove_forwarding_guards"
+                ) as mock_remove_guards,
+            ):
+                hook.enable_forwarding()
+                original_snapshot = state_file.read_bytes()
+                hook.enable_forwarding()
+
+                self.assertEqual(state_file.read_bytes(), original_snapshot)
+                self.assertEqual(mock_read.call_count, 3)
+                self.assertEqual(
+                    values,
+                    {
+                        hook.IPV4_FORWARDING: 1,
+                        hook.IPV6_FORWARDING: 1,
+                        hook.IPV4_SEND_REDIRECTS: 0,
+                    },
+                )
+
+                self.assertTrue(hook.restore_forwarding())
+
+            expected_state = hook.ForwardingState(0, 1, 1)
+            self.assertEqual(values[hook.IPV4_FORWARDING], 0)
+            self.assertEqual(values[hook.IPV6_FORWARDING], 1)
+            self.assertEqual(values[hook.IPV4_SEND_REDIRECTS], 1)
+            self.assertEqual(
+                mock_add_guards.call_args_list,
+                [call(expected_state), call(expected_state)],
+            )
+            mock_remove_guards.assert_called_once_with(expected_state)
+            self.assertFalse(state_file.exists())
+
+    def test_enable_failure_restores_snapshot_and_removes_state(self) -> None:
+        """
+        A partial sysctl setup failure restores every exact original value.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "run" / "mitmwall"
+            state_file = state_dir / "forwarding-state.json"
+            values = {
+                hook.IPV4_FORWARDING: 0,
+                hook.IPV6_FORWARDING: 0,
+                hook.IPV4_SEND_REDIRECTS: 1,
+            }
+            failed = False
+
+            def write_value(name: str, value: int) -> None:
+                """Fail the first IPv6 enable write and record all others."""
+
+                nonlocal failed
+                if name == hook.IPV6_FORWARDING and value == 1 and not failed:
+                    failed = True
+                    raise subprocess.CalledProcessError(1, ["sysctl"])
+                values[name] = value
+
+            def read_value(name: str) -> int:
+                """Return a simulated sysctl value."""
+
+                return values[name]
+
+            with (
+                patch("src.systemd.hook.FORWARDING_STATE_DIR", state_dir),
+                patch("src.systemd.hook.FORWARDING_STATE_FILE", state_file),
+                patch(
+                    "src.systemd.hook.read_sysctl",
+                    side_effect=read_value,
+                ),
+                patch("src.systemd.hook.write_sysctl", side_effect=write_value),
+                patch("src.systemd.hook.add_forwarding_guards"),
+                patch("src.systemd.hook.remove_forwarding_guards"),
+            ):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    hook.enable_forwarding()
+
+            self.assertEqual(
+                values,
+                {
+                    hook.IPV4_FORWARDING: 0,
+                    hook.IPV6_FORWARDING: 0,
+                    hook.IPV4_SEND_REDIRECTS: 1,
+                },
+            )
+            self.assertFalse(state_file.exists())
+
+    def test_corrupt_existing_state_fails_before_any_sysctl_change(self) -> None:
+        """
+        Corrupt state is preserved and prevents a start from guessing values.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "run" / "mitmwall"
+            state_file = state_dir / "forwarding-state.json"
+            state_dir.mkdir(mode=0o700, parents=True)
+            _ = state_file.write_text("not json\n", encoding="utf-8")
+            state_file.chmod(0o600)
+
+            with (
+                patch("src.systemd.hook.FORWARDING_STATE_DIR", state_dir),
+                patch("src.systemd.hook.FORWARDING_STATE_FILE", state_file),
+                patch("src.systemd.hook.read_sysctl") as mock_read,
+                patch("src.systemd.hook.write_sysctl") as mock_write,
+                patch("src.systemd.hook.add_forwarding_guards") as mock_guards,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "state is corrupt"):
+                    hook.enable_forwarding()
+
+            mock_read.assert_not_called()
+            mock_write.assert_not_called()
+            mock_guards.assert_not_called()
+            self.assertTrue(state_file.exists())
+
+    def test_missing_state_is_a_safe_restore_no_op(self) -> None:
+        """
+        Stop does not invent values when no forwarding snapshot exists.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "run" / "mitmwall"
+            state_file = state_dir / "forwarding-state.json"
+            with (
+                patch("src.systemd.hook.FORWARDING_STATE_DIR", state_dir),
+                patch("src.systemd.hook.FORWARDING_STATE_FILE", state_file),
+                patch("src.systemd.hook.write_sysctl") as mock_write,
+            ):
+                self.assertFalse(hook.restore_forwarding())
+
+            mock_write.assert_not_called()
+
+    def test_restore_failure_preserves_state_and_transit_guard(self) -> None:
+        """
+        Failed restoration remains retryable and does not expose forwarding.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "run" / "mitmwall"
+            state_file = state_dir / "forwarding-state.json"
+            state = hook.ForwardingState(0, 0, 1)
+            with (
+                patch("src.systemd.hook.FORWARDING_STATE_DIR", state_dir),
+                patch("src.systemd.hook.FORWARDING_STATE_FILE", state_file),
+            ):
+                hook.write_forwarding_state(state)
+
+                def fail_ipv6(name: str, _value: int) -> None:
+                    """Simulate one sysctl that cannot be restored."""
+
+                    if name == hook.IPV6_FORWARDING:
+                        raise subprocess.CalledProcessError(1, ["sysctl"])
+
+                with (
+                    patch("src.systemd.hook.write_sysctl", side_effect=fail_ipv6),
+                    patch(
+                        "src.systemd.hook.remove_forwarding_guards"
+                    ) as mock_remove,
+                ):
+                    with self.assertRaisesRegex(
+                        RuntimeError, "failed to restore saved forwarding state"
+                    ):
+                        _restored = hook.restore_forwarding()
+
+                self.assertTrue(state_file.exists())
+                mock_remove.assert_not_called()
+
+    @patch("src.systemd.hook.place_rule_first")
+    def test_guards_only_newly_enabled_address_families(
+        self, mock_place: MagicMock
+    ) -> None:
+        """
+        Existing administrator forwarding remains outside mitmwall policy.
+        """
+
+        hook.add_forwarding_guards(hook.ForwardingState(0, 1, 1))
+
+        mock_place.assert_called_once_with(
+            "iptables", "filter", "FORWARD", hook.forward_guard_rule()
+        )
+
+    def test_snapshot_permissions_are_root_only(self) -> None:
+        """
+        The runtime directory and state file exclude group and other users.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            state_dir = Path(temp_dir) / "run" / "mitmwall"
+            state_file = state_dir / "forwarding-state.json"
+            with (
+                patch("src.systemd.hook.FORWARDING_STATE_DIR", state_dir),
+                patch("src.systemd.hook.FORWARDING_STATE_FILE", state_file),
+            ):
+                hook.write_forwarding_state(hook.ForwardingState(0, 1, 1))
+
+            self.assertEqual(state_dir.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(state_file.stat().st_mode & 0o777, 0o600)
+
+
 class PlaceRuleFirstTests(unittest.TestCase):
     """
     Verify managed entry points are repaired at the head of built-in chains.
@@ -1288,6 +1522,7 @@ class MainTests(unittest.TestCase):
 
         with (
             patch("src.systemd.hook.configure_system_resolver") as mock_configure,
+            patch("src.systemd.hook.restore_forwarding") as mock_forward_restore,
             patch("src.systemd.hook.restore_system_resolver") as mock_restore,
             patch("sys.argv", ["hook.py", "start"]),
         ):
@@ -1295,6 +1530,7 @@ class MainTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "resolver failed"):
                 hook.main()
 
+        mock_forward_restore.assert_called_once()
         mock_restore.assert_called_once()
         mock_ensure.assert_not_called()
         mock_add.assert_not_called()
@@ -1306,11 +1542,13 @@ class MainTests(unittest.TestCase):
         """
 
         with (
+            patch("src.systemd.hook.restore_forwarding") as mock_forward_restore,
             patch("src.systemd.hook.restore_system_resolver") as mock_restore,
             patch("sys.argv", ["hook.py", "stop"]),
         ):
             hook.main()
 
+        mock_forward_restore.assert_called_once()
         mock_clear.assert_called_once()
         mock_restore.assert_called_once()
 
@@ -1324,13 +1562,37 @@ class MainTests(unittest.TestCase):
 
         mock_clear.side_effect = RuntimeError("cleanup failed")
         with (
+            patch("src.systemd.hook.restore_forwarding") as mock_forward_restore,
             patch("src.systemd.hook.restore_system_resolver") as mock_restore,
             patch("sys.argv", ["hook.py", "stop"]),
         ):
             with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
                 hook.main()
 
+        mock_forward_restore.assert_called_once()
         mock_restore.assert_called_once()
+
+    @patch("src.systemd.hook.ensure_web_rules_file")
+    @patch("src.systemd.hook.add_rules")
+    def test_main_start_restores_forwarding_when_rule_setup_fails(
+        self, mock_add: MagicMock, _mock_ensure: MagicMock
+    ) -> None:
+        """
+        A failure after forwarding setup invokes runtime state restoration.
+        """
+
+        mock_add.side_effect = RuntimeError("rule setup failed")
+        with (
+            patch("src.systemd.hook.configure_system_resolver"),
+            patch("src.systemd.hook.restore_forwarding") as mock_forward_restore,
+            patch("src.systemd.hook.restore_system_resolver") as mock_resolver_restore,
+            patch("sys.argv", ["hook.py", "start"]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "rule setup failed"):
+                hook.main()
+
+        mock_forward_restore.assert_called_once()
+        mock_resolver_restore.assert_called_once()
 
     def test_main_missing_argument(self) -> None:
         """

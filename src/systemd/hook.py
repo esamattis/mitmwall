@@ -8,9 +8,13 @@ ExecStopPost (stop).
 """
 
 import ipaddress
+import json
 import os
+import stat
 import subprocess
 import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
@@ -30,6 +34,12 @@ COMMENT = "mitmwall-custom"
 XTABLES_WAIT_SECONDS = 10
 RULE_ABSENT_ERROR = "Bad rule (does a matching rule exist in that chain?)."
 CHAIN_ABSENT_ERROR = "No chain/target/match by that name."
+FORWARDING_STATE_DIR = Path("/run/mitmwall")
+FORWARDING_STATE_FILE = FORWARDING_STATE_DIR / "forwarding-state.json"
+IPV4_FORWARDING = "net.ipv4.ip_forward"
+IPV6_FORWARDING = "net.ipv6.conf.all.forwarding"
+IPV4_SEND_REDIRECTS = "net.ipv4.conf.all.send_redirects"
+FORWARD_GUARD_COMMENT = "mitmwall-forwarding-guard"
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
 # Policy installed by the "start" action:
@@ -116,35 +126,281 @@ def place_rule_first(
     )
 
 
+@dataclass(frozen=True)
+class ForwardingState:
+    """
+    Exact forwarding-related sysctl values from before mitmwall started.
+    """
+
+    ipv4_forwarding: int
+    ipv6_forwarding: int
+    ipv4_send_redirects: int
+
+
+def read_sysctl(name: str) -> int:
+    """
+    Read an integer sysctl value.
+    """
+
+    result = subprocess.run(
+        ["sysctl", "-n", name],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    try:
+        return int(result.stdout.strip())
+    except ValueError as error:
+        raise RuntimeError(f"sysctl {name} returned a non-integer value") from error
+
+
+def write_sysctl(name: str, value: int) -> None:
+    """
+    Set an integer sysctl value.
+    """
+
+    _ = subprocess.run(
+        ["sysctl", "-w", f"{name}={value}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def validate_forwarding_state_directory() -> None:
+    """
+    Create or validate the root-only forwarding state directory.
+    """
+
+    try:
+        metadata = FORWARDING_STATE_DIR.lstat()
+    except FileNotFoundError:
+        FORWARDING_STATE_DIR.mkdir(mode=0o700, parents=True)
+        metadata = FORWARDING_STATE_DIR.lstat()
+
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+        raise RuntimeError(
+            f"forwarding state directory is not owned by root: {FORWARDING_STATE_DIR}"
+        )
+    FORWARDING_STATE_DIR.chmod(0o700)
+
+
+def write_forwarding_state(state: ForwardingState) -> None:
+    """
+    Persist the original forwarding sysctls atomically with root-only access.
+    """
+
+    validate_forwarding_state_directory()
+    payload = {
+        "ipv4_forwarding": state.ipv4_forwarding,
+        "ipv6_forwarding": state.ipv6_forwarding,
+        "ipv4_send_redirects": state.ipv4_send_redirects,
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".forwarding-state-", dir=FORWARDING_STATE_DIR
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            descriptor = -1
+            json.dump(payload, file, sort_keys=True)
+            _ = file.write("\n")
+            file.flush()
+            os.fsync(file.fileno())
+        os.link(temporary_path, FORWARDING_STATE_FILE)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+
+
+def read_forwarding_state() -> ForwardingState:
+    """
+    Read and strictly validate the saved forwarding sysctls.
+    """
+
+    validate_forwarding_state_directory()
+    try:
+        metadata = FORWARDING_STATE_FILE.lstat()
+    except FileNotFoundError as error:
+        raise RuntimeError("saved forwarding state is absent") from error
+
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise RuntimeError("saved forwarding state is not a root-only regular file")
+
+    try:
+        value = cast(
+            object, json.loads(FORWARDING_STATE_FILE.read_text(encoding="utf-8"))
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("saved forwarding state is corrupt") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("saved forwarding state is not a JSON object")
+
+    fields = cast(dict[object, object], value)
+    expected_fields = {
+        "ipv4_forwarding",
+        "ipv6_forwarding",
+        "ipv4_send_redirects",
+    }
+    if set(fields) != expected_fields:
+        raise RuntimeError("saved forwarding state has invalid fields")
+    if any(type(fields[field]) is not int for field in expected_fields):
+        raise RuntimeError("saved forwarding state has non-integer values")
+    if any(fields[field] not in (0, 1) for field in expected_fields):
+        raise RuntimeError("saved forwarding state has invalid values")
+
+    return ForwardingState(
+        cast(int, fields["ipv4_forwarding"]),
+        cast(int, fields["ipv6_forwarding"]),
+        cast(int, fields["ipv4_send_redirects"]),
+    )
+
+
+def load_or_create_forwarding_state() -> ForwardingState:
+    """
+    Return the original snapshot, creating it once before changing sysctls.
+    """
+
+    try:
+        _metadata = FORWARDING_STATE_FILE.lstat()
+    except FileNotFoundError:
+        state = ForwardingState(
+            read_sysctl(IPV4_FORWARDING),
+            read_sysctl(IPV6_FORWARDING),
+            read_sysctl(IPV4_SEND_REDIRECTS),
+        )
+        try:
+            write_forwarding_state(state)
+            return state
+        except FileExistsError:
+            return read_forwarding_state()
+    return read_forwarding_state()
+
+
+def forward_guard_rule() -> list[str]:
+    """
+    Return the managed rule that blocks transit traffic enabled by mitmwall.
+    """
+
+    return [
+        "-m",
+        "comment",
+        "--comment",
+        FORWARD_GUARD_COMMENT,
+        "-j",
+        "DROP",
+    ]
+
+
+def add_forwarding_guards(state: ForwardingState) -> None:
+    """
+    Block transit only for address families mitmwall newly enables.
+
+    A pre-existing enabled value is administrator policy and is not guarded or
+    otherwise changed beyond being preserved for exact restoration.
+    """
+
+    if state.ipv4_forwarding == 0:
+        place_rule_first("iptables", "filter", "FORWARD", forward_guard_rule())
+    if state.ipv6_forwarding == 0:
+        place_rule_first("ip6tables", "filter", "FORWARD", forward_guard_rule())
+
+
+def remove_forwarding_guard(table_cmd: str) -> None:
+    """
+    Remove every copy of mitmwall's transit forwarding guard.
+    """
+
+    rule = forward_guard_rule()
+    while probe_xtables(
+        table_cmd,
+        ["-t", "filter", "-C", "FORWARD", *rule],
+        RULE_ABSENT_ERROR,
+    ) is not None:
+        _ = run_xtables(
+            table_cmd, ["-t", "filter", "-D", "FORWARD", *rule]
+        )
+
+
+def remove_forwarding_guards(state: ForwardingState) -> None:
+    """
+    Remove transit guards after forwarding has returned to its original state.
+    """
+
+    if state.ipv4_forwarding == 0:
+        remove_forwarding_guard("iptables")
+    if state.ipv6_forwarding == 0:
+        remove_forwarding_guard("ip6tables")
+
+
+def restore_forwarding() -> bool:
+    """
+    Restore all saved sysctls exactly and remove the snapshot on full success.
+
+    Missing state means this invocation did not manage forwarding and is a safe
+    no-op. Invalid state and failed writes leave both the state and any transit
+    guards in place so the operator can repair and retry without guessing.
+    """
+
+    try:
+        _metadata = FORWARDING_STATE_FILE.lstat()
+    except FileNotFoundError:
+        return False
+
+    state = read_forwarding_state()
+    failures: list[str] = []
+    for name, value in (
+        (IPV4_FORWARDING, state.ipv4_forwarding),
+        (IPV6_FORWARDING, state.ipv6_forwarding),
+        (IPV4_SEND_REDIRECTS, state.ipv4_send_redirects),
+    ):
+        try:
+            write_sysctl(name, value)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            failures.append(f"{name}: {error}")
+
+    if failures:
+        raise RuntimeError(
+            "failed to restore saved forwarding state: " + "; ".join(failures)
+        )
+
+    remove_forwarding_guards(state)
+    FORWARDING_STATE_FILE.unlink()
+    try:
+        FORWARDING_STATE_DIR.rmdir()
+    except OSError:
+        pass
+    return True
+
+
 def enable_forwarding() -> None:
     """
-    Enable IPv4 and IPv6 forwarding so the kernel will route packets that are
-    transparently intercepted by mitmproxy back out to their original upstream
-    destinations.
+    Save, guard, and enable forwarding-related settings for mitmwall startup.
     """
 
-    # Enable IPv4 and IPv6 forwarding so the kernel will route packets that are
-    # transparently intercepted by mitmproxy back out to their original upstream
-    # destinations.
-    _ = subprocess.run(
-        ["sysctl", "-w", "net.ipv4.ip_forward=1"],
-        capture_output=True,
-        check=True,
-    )
-    _ = subprocess.run(
-        ["sysctl", "-w", "net.ipv6.conf.all.forwarding=1"],
-        capture_output=True,
-        check=True,
-    )
-
-    # Disable IPv4 ICMP redirects. This host is intentionally acting as the gateway
-    # for intercepted traffic, and redirects could teach clients a bypass path that
-    # avoids the transparent proxy/firewall policy.
-    _ = subprocess.run(
-        ["sysctl", "-w", "net.ipv4.conf.all.send_redirects=0"],
-        capture_output=True,
-        check=True,
-    )
+    state = load_or_create_forwarding_state()
+    try:
+        add_forwarding_guards(state)
+        write_sysctl(IPV4_FORWARDING, 1)
+        write_sysctl(IPV6_FORWARDING, 1)
+        write_sysctl(IPV4_SEND_REDIRECTS, 0)
+    except BaseException as start_error:
+        try:
+            _restored = restore_forwarding()
+        except BaseException as restore_error:
+            raise RuntimeError(
+                "failed to enable forwarding and restore its saved state"
+            ) from BaseExceptionGroup(
+                "forwarding setup and restoration failures",
+                [start_error, restore_error],
+            )
+        raise
 
 
 def add_redirect_rule(table_cmd: str, dport: int) -> None:
@@ -1287,11 +1543,26 @@ def main() -> None:
             configure_system_resolver()
             ensure_web_rules_file()
             add_rules()
-        except BaseException:
-            restore_system_resolver()
+        except BaseException as start_error:
+            try:
+                _restored = restore_forwarding()
+                restore_system_resolver()
+            except BaseException as restore_error:
+                raise RuntimeError(
+                    "mitmwall startup failed and runtime state restoration failed"
+                ) from BaseExceptionGroup(
+                    "startup and restoration failures",
+                    [start_error, restore_error],
+                )
             raise
     elif action == "stop":
         try:
+            restored = restore_forwarding()
+            if not restored:
+                print(
+                    "hook.py: no saved forwarding state; sysctls left unchanged",
+                    file=sys.stderr,
+                )
             clear_rules()
         finally:
             restore_system_resolver()
