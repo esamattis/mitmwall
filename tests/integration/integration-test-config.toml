@@ -12,6 +12,11 @@ port = 443
 network = "172.64.155.209/32"
 port = 443
 
+# Install an IPv6 bypass so empty-config refreshes exercise both rule families.
+[[iptables.bypass]]
+network = "2001:db8::/32"
+port = 443
+
 
 # hostcmd with lima https://github.com/esamattis/hostcmd
 [[iptables.bypass]]

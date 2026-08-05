@@ -1506,10 +1506,11 @@ def add_custom_rules(rules: list[CustomRule] | None = None) -> None:
 
     if rules is None:
         rules = parse_custom_rules()
-    if not rules:
-        return
 
     clear_custom_rules()
+
+    if not rules:
+        return
 
     for rule in rules:
         add_nat_bypass_rule(rule.table_cmd, rule.network, rule.port)

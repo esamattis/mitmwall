@@ -1240,7 +1240,7 @@ class AddCustomRulesTests(unittest.TestCase):
     @patch("src.systemd.hook.add_rule")
     @patch("src.systemd.hook.add_nat_bypass_rule")
     @patch("src.systemd.hook.parse_custom_rules")
-    def test_no_rules_when_config_empty(
+    def test_empty_config_clears_stale_rules(
         self,
         mock_parse: MagicMock,
         mock_nat: MagicMock,
@@ -1248,14 +1248,36 @@ class AddCustomRulesTests(unittest.TestCase):
         mock_clear: MagicMock,
     ) -> None:
         """
-        Nothing is added when the config contains no custom rules.
+        An empty parsed config removes stale rules without adding replacements.
         """
 
         mock_parse.return_value = []
 
         hook.add_custom_rules()
 
-        mock_clear.assert_not_called()
+        mock_clear.assert_called_once()
+        mock_nat.assert_not_called()
+        mock_add.assert_not_called()
+
+    @patch("src.systemd.hook.clear_custom_rules")
+    @patch("src.systemd.hook.add_rule")
+    @patch("src.systemd.hook.add_nat_bypass_rule")
+    @patch("src.systemd.hook.parse_custom_rules")
+    def test_empty_validated_rules_clear_without_reparsing(
+        self,
+        mock_parse: MagicMock,
+        mock_nat: MagicMock,
+        mock_add: MagicMock,
+        mock_clear: MagicMock,
+    ) -> None:
+        """
+        A typed empty rule list from startup still removes stale installed rules.
+        """
+
+        hook.add_custom_rules([])
+
+        mock_parse.assert_not_called()
+        mock_clear.assert_called_once()
         mock_nat.assert_not_called()
         mock_add.assert_not_called()
 

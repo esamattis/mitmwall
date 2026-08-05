@@ -8,6 +8,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
@@ -27,6 +28,11 @@ PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 58080
 SERVICE_READY_TIMEOUT_SECONDS = 20
 SERVICE_READY_POLL_INTERVAL_SECONDS = 0.1
+CUSTOM_RULE_COMMENT = "mitmwall-custom"
+ADMIN_RULE_COMMENT = "mitmwall-integration-admin"
+INSTALLED_CONFIG = Path("/etc/mitmwall/config.toml")
+INSTALLED_HOOK = Path("/opt/mitmwall/hook.py")
+INTEGRATION_CONFIG = Path(__file__).with_name("integration-test-config.toml")
 
 
 def wait_for_tcp_listener(host: str, port: int, timeout_seconds: float) -> bool:
@@ -73,6 +79,47 @@ def is_string_key_dict(value: object) -> TypeGuard[dict[str, object]]:
         if not isinstance(key_object, str):
             return False
     return True
+
+
+def run_sudo(command: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+    """
+    Run a command through non-interactive sudo and capture its text output.
+    """
+
+    return subprocess.run(
+        ["sudo", "-n", *command],
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+
+
+def list_table_rules(table_command: str, table: str) -> str:
+    """
+    Return all serialized rules from an IPv4 or IPv6 firewall table.
+    """
+
+    return run_sudo(
+        [table_command, "-w", "10", "-t", table, "-S"]
+    ).stdout
+
+
+def fetch_tls_certificate(host: str, server_hostname: str) -> bytes:
+    """
+    Fetch the peer certificate for a new TLS connection to a fixed address.
+    """
+
+    context = ssl.create_default_context(cafile=SYSTEM_CA_CERTIFICATES)
+    with socket.create_connection(
+        (host, 443), timeout=CONNECT_TIMEOUT_SECONDS
+    ) as connection:
+        with context.wrap_socket(
+            connection, server_hostname=server_hostname
+        ) as tls_connection:
+            certificate = tls_connection.getpeercert(binary_form=True)
+    if certificate is None:
+        raise RuntimeError(f"{host}:443 returned no TLS certificate")
+    return certificate
 
 
 class ReadableResponse(Protocol):
@@ -671,6 +718,137 @@ class MitmwallNetworkTests(unittest.TestCase):
             self.assert_tcp_allowed("loopback TCP connection", host, port)
         finally:
             stop_server()
+
+    def test_z_empty_custom_config_removes_installed_bypasses(self) -> None:
+        """
+        Verify repeated start refreshes remove stale IPv4/IPv6 custom bypasses.
+        """
+
+        admin_rules = [
+            ("iptables", "filter", "192.0.2.1/32"),
+            ("iptables", "nat", "192.0.2.1/32"),
+            ("ip6tables", "filter", "2001:db8::1/128"),
+            ("ip6tables", "nat", "2001:db8::1/128"),
+        ]
+        added_admin_rules: list[tuple[str, str, list[str]]] = []
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            empty_config = Path(temp_dir) / "config.toml"
+            _ = empty_config.write_text(
+                "[iptables]\nbypass = []\n", encoding="utf-8"
+            )
+
+            try:
+                for table_command, table, network in admin_rules:
+                    rule = [
+                        "-p",
+                        "tcp",
+                        "-d",
+                        network,
+                        "--dport",
+                        "9",
+                        "-m",
+                        "comment",
+                        "--comment",
+                        ADMIN_RULE_COMMENT,
+                        "-j",
+                        "ACCEPT",
+                    ]
+                    _ = run_sudo(
+                        [
+                            table_command,
+                            "-w",
+                            "10",
+                            "-t",
+                            table,
+                            "-A",
+                            "OUTPUT",
+                            *rule,
+                        ]
+                    )
+                    added_admin_rules.append((table_command, table, rule))
+
+                for table_command in ("iptables", "ip6tables"):
+                    for table in ("filter", "nat"):
+                        with self.subTest(
+                            phase="configured", table_command=table_command, table=table
+                        ):
+                            self.assertIn(
+                                CUSTOM_RULE_COMMENT,
+                                list_table_rules(table_command, table),
+                            )
+
+                direct_certificate = fetch_tls_certificate("8.8.8.8", "dns.google")
+
+                _ = run_sudo(
+                    [
+                        "install",
+                        "-o",
+                        "root",
+                        "-g",
+                        "mitmwall",
+                        "-m",
+                        "0640",
+                        str(empty_config),
+                        str(INSTALLED_CONFIG),
+                    ]
+                )
+                _ = run_sudo([str(INSTALLED_HOOK), "start"])
+                _ = run_sudo([str(INSTALLED_HOOK), "start"])
+
+                for table_command in ("iptables", "ip6tables"):
+                    filter_rules = list_table_rules(table_command, "filter")
+                    nat_rules = list_table_rules(table_command, "nat")
+                    with self.subTest(
+                        phase="empty", table_command=table_command, table="filter"
+                    ):
+                        self.assertNotIn(CUSTOM_RULE_COMMENT, filter_rules)
+                        self.assertIn(ADMIN_RULE_COMMENT, filter_rules)
+                        self.assertIn("-A OUTPUT -j MITMWALL_OUTPUT", filter_rules)
+                        self.assertIn("-A MITMWALL_OUTPUT -j DROP", filter_rules)
+                    with self.subTest(
+                        phase="empty", table_command=table_command, table="nat"
+                    ):
+                        self.assertNotIn(CUSTOM_RULE_COMMENT, nat_rules)
+                        self.assertIn(ADMIN_RULE_COMMENT, nat_rules)
+                        self.assertIn("-j REDIRECT", nat_rules)
+
+                proxied_certificate = fetch_tls_certificate("8.8.8.8", "dns.google")
+                self.assertNotEqual(
+                    direct_certificate,
+                    proxied_certificate,
+                    "8.8.8.8:443 still appeared to bypass the transparent proxy",
+                )
+            finally:
+                _ = run_sudo(
+                    [
+                        "install",
+                        "-o",
+                        "root",
+                        "-g",
+                        "mitmwall",
+                        "-m",
+                        "0640",
+                        str(INTEGRATION_CONFIG),
+                        str(INSTALLED_CONFIG),
+                    ],
+                    check=False,
+                )
+                _ = run_sudo([str(INSTALLED_HOOK), "start"], check=False)
+                for table_command, table, rule in reversed(added_admin_rules):
+                    _ = run_sudo(
+                        [
+                            table_command,
+                            "-w",
+                            "10",
+                            "-t",
+                            table,
+                            "-D",
+                            "OUTPUT",
+                            *rule,
+                        ],
+                        check=False,
+                    )
 
     def _url_reachability(
         self, url: str, method: str = "GET"
