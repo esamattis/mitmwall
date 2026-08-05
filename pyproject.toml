@@ -1,3 +1,8 @@
 [tool.basedpyright]
 include = ["src", "tests", "tests/integration/integration_tests.py"]
 typeCheckingMode = "recommended"
+
+[dependency-groups]
+dev = [
+    "basedpyright>=1.39.9",
+]

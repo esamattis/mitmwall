@@ -7,6 +7,12 @@ log_level = "info"
 # The default is true.
 block_dns = true
 
+# Replace PVE-managed upstream nameservers in /etc/resolv.conf with
+# systemd-resolved's loopback stub while mitmwall runs. Disable this when the
+# system resolver configuration cannot or should not be replaced.
+# The default is true.
+manage_resolv_conf = true
+
 # Clear mitmproxy's in-memory flow history after this many HTTP requests.
 # The default is 1000.
 flow_history_clear_interval = 1000

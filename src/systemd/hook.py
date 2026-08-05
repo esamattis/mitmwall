@@ -16,6 +16,7 @@ from typing import cast
 import tomllib
 
 from src.addon.constants import ADDON_CONFIG_FILE, WEB_RULES_FILE
+from src.systemd.resolv_conf import configure_system_resolver, restore_system_resolver
 from src.utils.toml_helpers import is_toml_table
 
 USER = "mitmwall"
@@ -25,8 +26,6 @@ DNS_PORT = 58053
 WEB_PORT = 58081
 CHAIN = "MITMWALL_OUTPUT"
 COMMENT = "mitmwall-custom"
-
-
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
 # Policy installed by the "start" action:
@@ -1307,10 +1306,18 @@ def main() -> None:
 
     action = sys.argv[1]
     if action == "start":
-        ensure_web_rules_file()
-        add_rules()
+        try:
+            configure_system_resolver()
+            ensure_web_rules_file()
+            add_rules()
+        except BaseException:
+            restore_system_resolver()
+            raise
     elif action == "stop":
-        clear_rules()
+        try:
+            clear_rules()
+        finally:
+            restore_system_resolver()
     else:
         usage()
         sys.exit(2)

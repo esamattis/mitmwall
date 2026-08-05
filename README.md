@@ -25,6 +25,13 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
 
 - systemd `mitmwall.service` starts `mitmweb` in transparent HTTP(S) proxy mode
   and DNS proxy mode.
+- When `manage_resolv_conf` is enabled, `ExecStartPre` temporarily switches an
+  `/etc/resolv.conf` containing external
+  nameservers to systemd-resolved's loopback stub. PVE commonly writes upstream
+  nameservers directly to `/etc/resolv.conf` in LXC containers, which is
+  incompatible with mitmwall's local UDP DNS REDIRECT path. This is a resolver
+  configuration compatibility workaround. The original regular file or symlink
+  is preserved for restoration.
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
   - redirect outbound TCP port `80` and `443` traffic to the HTTP(S) proxy
   - redirect outbound TCP/UDP port `53` traffic to the DNS proxy
@@ -46,7 +53,8 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
   - kills HTTP(S) flows whose host, method, and pathname do not match the
     allowlist
   - refuses DNS queries whose hostname does not match any allow rule
-- `ExecStopPost` removes the firewall rules when the service stops.
+- `ExecStopPost` removes the firewall rules and restores the original
+  `/etc/resolv.conf` when the service stops.
 
 If `/etc/mitmwall/rules.d` is missing or any rule file is invalid, mitmwall
 fails closed and blocks all proxied HTTP(S) traffic and DNS resolution.

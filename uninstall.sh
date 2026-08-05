@@ -58,7 +58,7 @@ fi
 # Clear firewall rules directly as well. This keeps uninstall useful if the
 # service was not running, was already removed, or failed before ExecStopPost.
 if [ -x "$optdir/hook.py" ]; then
-    "$optdir/hook.py" clear || warn "failed to clear mitmwall firewall rules"
+    "$optdir/hook.py" stop || warn "failed to clear mitmwall firewall rules and restore resolver configuration"
 else
     warn "iptables helper not found; skipping firewall cleanup"
 fi

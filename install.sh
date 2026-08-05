@@ -70,6 +70,7 @@ etcdir=/etc/mitmwall
 rulesdir=$etcdir/rules.d
 addon_config_file=$etcdir/config.toml
 addon_dir=$optdir/src
+systemd_dir=$addon_dir/systemd
 mitmproxy_confdir=$optdir/mitmweb
 mitmweb_config_file=$mitmproxy_confdir/config.yaml
 servicefile=/etc/systemd/system/mitmwall.service
@@ -161,9 +162,10 @@ install -m 0755 "$scriptdir/src/systemd/hook.py" "$scriptdir/start.sh" "$optdir/
 info "installing mitmproxy addon into $addon_dir"
 rm -f "$optdir/mitmwall_addon.py"
 rm -rf "$optdir/mitmwall_addon" "$optdir/mitmproxy_addon" "$addon_dir"
-install -d -m 0755 "$addon_dir" "$addon_dir/addon" "$addon_dir/utils"
+install -d -m 0755 "$addon_dir" "$addon_dir/addon" "$addon_dir/systemd" "$addon_dir/utils"
 install -m 0644 "$scriptdir"/src/__init__.py "$addon_dir/"
 install -m 0644 "$scriptdir"/src/addon/*.py "$addon_dir/addon/"
+install -m 0644 "$scriptdir"/src/systemd/__init__.py "$scriptdir"/src/systemd/resolv_conf.py "$systemd_dir/"
 install -m 0644 "$scriptdir"/src/utils/*.py "$addon_dir/utils/"
 
 # Install the repository-provided example rules into the rules directory. Rule
@@ -184,6 +186,15 @@ cat >"$servicefile" <<EOF
 Description=mitmwall transparent HTTP(S) and DNS mitmproxy service
 After=network-online.target
 Wants=network-online.target
+# mitmwall replaces a regular /etc/resolv.conf with resolved's stub while it is
+# active. If resolved restarts first, it cannot recover upstream DNS settings
+# that existed only in the original file, so their lifecycles must be coupled.
+# Stop mitmwall whenever resolved becomes inactive and start resolved with it.
+BindsTo=systemd-resolved.service
+# Start after resolved and stop before it so ExecStopPost restores resolv.conf.
+After=systemd-resolved.service
+# Propagate explicit resolved stop and restart operations to mitmwall.
+PartOf=systemd-resolved.service
 
 [Service]
 Type=simple

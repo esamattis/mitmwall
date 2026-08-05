@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
-from src.systemd import hook
+from src.systemd import hook, resolv_conf as resolver
 
 
 class ParseCustomRulesTests(unittest.TestCase):
@@ -534,6 +534,283 @@ class EnsureWebRulesFileTests(unittest.TestCase):
             self.assertIn(["chmod", "660", str(path)], commands)
 
 
+class SystemResolverTests(unittest.TestCase):
+    """
+    Verify temporary use and exact restoration of systemd-resolved's stub.
+    """
+
+    def test_external_nameserver_is_detected(self) -> None:
+        """
+        A non-loopback nameserver requires the systemd-resolved stub.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "resolv.conf"
+            _ = path.write_text(
+                "nameserver 127.0.0.53\nnameserver 192.0.2.53\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(resolver.resolv_conf_uses_external_nameserver(path))
+
+    def test_loopback_nameservers_do_not_require_reconfiguration(self) -> None:
+        """
+        IPv4 and IPv6 loopback resolvers avoid the LXC UDP hairpin.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "resolv.conf"
+            _ = path.write_text(
+                "nameserver 127.0.0.53\nnameserver ::1\n", encoding="utf-8"
+            )
+
+            self.assertFalse(resolver.resolv_conf_uses_external_nameserver(path))
+
+    @patch("src.systemd.resolv_conf.subprocess.run")
+    def test_regular_resolv_conf_is_switched_and_restored(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        An external regular file is replaced by the stub and restored exactly.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            resolv_conf = root / "resolv.conf"
+            stub = root / "stub-resolv.conf"
+            state_dir = root / "state"
+            state_file = state_dir / "resolv-conf-state.json"
+            legacy_state_dir = root / "legacy-state"
+            legacy_state_file = legacy_state_dir / "resolv-conf-state.json"
+            original = b"search example.test\nnameserver 192.0.2.53\n"
+            _ = resolv_conf.write_bytes(original)
+            resolv_conf.chmod(0o640)
+            _ = stub.write_text("nameserver 127.0.0.53\n", encoding="utf-8")
+
+            with (
+                patch("src.systemd.resolv_conf.RESOLV_CONF", resolv_conf),
+                patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
+            ):
+                resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
+                self.assertTrue(resolv_conf.is_symlink())
+                self.assertEqual(resolv_conf.resolve(), stub)
+
+                # A repeated start must retain the first saved configuration.
+                resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
+                resolver.restore_system_resolver()
+
+            self.assertFalse(resolv_conf.is_symlink())
+            self.assertEqual(resolv_conf.read_bytes(), original)
+            self.assertEqual(resolv_conf.stat().st_mode & 0o777, 0o640)
+            self.assertFalse(state_file.exists())
+
+    @patch("src.systemd.resolv_conf.subprocess.run")
+    def test_symlink_resolv_conf_is_restored(self, mock_run: MagicMock) -> None:
+        """
+        An original symlink is restored with its exact relative target.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            upstream = root / "upstream-resolv.conf"
+            stub = root / "stub-resolv.conf"
+            resolv_conf = root / "resolv.conf"
+            state_dir = root / "state"
+            state_file = state_dir / "resolv-conf-state.json"
+            legacy_state_dir = root / "legacy-state"
+            legacy_state_file = legacy_state_dir / "resolv-conf-state.json"
+            _ = upstream.write_text("nameserver 192.0.2.53\n", encoding="utf-8")
+            _ = stub.write_text("nameserver 127.0.0.53\n", encoding="utf-8")
+            resolv_conf.symlink_to(upstream.name)
+
+            with (
+                patch("src.systemd.resolv_conf.RESOLV_CONF", resolv_conf),
+                patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
+            ):
+                resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
+                resolver.restore_system_resolver()
+
+            self.assertTrue(resolv_conf.is_symlink())
+            self.assertEqual(resolv_conf.readlink(), Path(upstream.name))
+
+    @patch("src.systemd.resolv_conf.subprocess.run")
+    def test_inactive_systemd_resolved_fails_without_modifying_file(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        External DNS fails visibly when no safe local stub is active.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=3)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            resolv_conf = root / "resolv.conf"
+            stub = root / "stub-resolv.conf"
+            state_dir = root / "state"
+            state_file = state_dir / "resolv-conf-state.json"
+            legacy_state_dir = root / "legacy-state"
+            legacy_state_file = legacy_state_dir / "resolv-conf-state.json"
+            original = "nameserver 192.0.2.53\n"
+            _ = resolv_conf.write_text(original, encoding="utf-8")
+            _ = stub.write_text("nameserver 127.0.0.53\n", encoding="utf-8")
+
+            with (
+                patch("src.systemd.resolv_conf.RESOLV_CONF", resolv_conf),
+                patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "systemd-resolved is not active"):
+                    resolver.configure_system_resolver(
+                        Path("/nonexistent/config.toml")
+                    )
+
+            self.assertEqual(resolv_conf.read_text("utf-8"), original)
+            self.assertFalse(state_file.exists())
+
+    @patch("src.systemd.resolv_conf.subprocess.run")
+    def test_external_resolver_update_is_not_overwritten(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        A resolver manager update made while mitmwall runs remains authoritative.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            resolv_conf = root / "resolv.conf"
+            stub = root / "stub-resolv.conf"
+            state_dir = root / "state"
+            state_file = state_dir / "resolv-conf-state.json"
+            legacy_state_dir = root / "legacy-state"
+            legacy_state_file = legacy_state_dir / "resolv-conf-state.json"
+            _ = resolv_conf.write_text("nameserver 192.0.2.53\n", encoding="utf-8")
+            _ = stub.write_text("nameserver 127.0.0.53\n", encoding="utf-8")
+
+            with (
+                patch("src.systemd.resolv_conf.RESOLV_CONF", resolv_conf),
+                patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
+                patch("sys.stderr"),
+            ):
+                resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
+                resolv_conf.unlink()
+                updated = "search updated.test\nnameserver 198.51.100.53\n"
+                _ = resolv_conf.write_text(updated, encoding="utf-8")
+                resolver.restore_system_resolver()
+
+            self.assertEqual(resolv_conf.read_text("utf-8"), updated)
+            self.assertFalse(state_file.exists())
+
+    def test_legacy_runtime_state_is_restored_after_upgrade(self) -> None:
+        """
+        State written under /run by the previous hook remains recoverable.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            resolv_conf = root / "resolv.conf"
+            stub = root / "stub-resolv.conf"
+            state_dir = root / "state"
+            state_file = state_dir / "resolv-conf-state.json"
+            legacy_state_dir = root / "legacy-state"
+            legacy_state_file = legacy_state_dir / "resolv-conf-state.json"
+            original = b"search legacy.test\nnameserver 192.0.2.53\n"
+            _ = stub.write_text("nameserver 127.0.0.53\n", encoding="utf-8")
+            resolv_conf.symlink_to(stub)
+
+            with (
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", legacy_state_dir),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", legacy_state_file),
+            ):
+                resolver.write_resolver_state(
+                    resolver.ResolverState(
+                        "file",
+                        resolv_conf.lstat().st_uid,
+                        resolv_conf.lstat().st_gid,
+                        0o644,
+                        content=original,
+                    )
+                )
+
+            with (
+                patch("src.systemd.resolv_conf.RESOLV_CONF", resolv_conf),
+                patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
+                patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
+                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
+            ):
+                resolver.restore_system_resolver()
+
+            self.assertFalse(resolv_conf.is_symlink())
+            self.assertEqual(resolv_conf.read_bytes(), original)
+            self.assertFalse(legacy_state_file.exists())
+
+    @patch("src.systemd.resolv_conf.subprocess.run")
+    def test_resolver_handling_can_be_disabled(self, mock_run: MagicMock) -> None:
+        """
+        manage_resolv_conf=false leaves an external resolver file unchanged.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = root / "config.toml"
+            system_resolv_conf = root / "resolv.conf"
+            _ = config.write_text("manage_resolv_conf = false\n", encoding="utf-8")
+            original = "nameserver 192.0.2.53\n"
+            _ = system_resolv_conf.write_text(original, encoding="utf-8")
+
+            with patch("src.systemd.resolv_conf.RESOLV_CONF", system_resolv_conf):
+                resolver.configure_system_resolver(config)
+
+            self.assertEqual(system_resolv_conf.read_text("utf-8"), original)
+            mock_run.assert_not_called()
+
+    def test_resolver_handling_defaults_to_enabled(self) -> None:
+        """
+        A missing configuration file retains the enabled default.
+        """
+
+        self.assertTrue(
+            resolver.resolv_conf_handling_enabled(
+                Path("/nonexistent/config.toml")
+            )
+        )
+
+    def test_resolver_handling_rejects_non_boolean_value(self) -> None:
+        """
+        manage_resolv_conf must be a TOML boolean.
+        """
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = Path(temp_dir) / "config.toml"
+            _ = config.write_text(
+                'manage_resolv_conf = "false"\n', encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(
+                ValueError, "'manage_resolv_conf' must be a boolean"
+            ):
+                _enabled = resolver.resolv_conf_handling_enabled(config)
+
+
 class MainTests(unittest.TestCase):
     """
     Verify the script entry point dispatches to the correct actions.
@@ -546,10 +823,36 @@ class MainTests(unittest.TestCase):
         The 'start' argument triggers add_rules.
         """
 
-        with patch("sys.argv", ["hook.py", "start"]):
+        with (
+            patch("src.systemd.hook.configure_system_resolver") as mock_configure,
+            patch("sys.argv", ["hook.py", "start"]),
+        ):
             hook.main()
 
+        mock_configure.assert_called_once()
         mock_add.assert_called_once()
+
+    @patch("src.systemd.hook.ensure_web_rules_file")
+    @patch("src.systemd.hook.add_rules")
+    def test_main_start_restores_resolver_when_configuration_fails(
+        self, mock_add: MagicMock, mock_ensure: MagicMock
+    ) -> None:
+        """
+        Resolver restoration runs when start-time resolver setup raises an error.
+        """
+
+        with (
+            patch("src.systemd.hook.configure_system_resolver") as mock_configure,
+            patch("src.systemd.hook.restore_system_resolver") as mock_restore,
+            patch("sys.argv", ["hook.py", "start"]),
+        ):
+            mock_configure.side_effect = RuntimeError("resolver failed")
+            with self.assertRaisesRegex(RuntimeError, "resolver failed"):
+                hook.main()
+
+        mock_restore.assert_called_once()
+        mock_ensure.assert_not_called()
+        mock_add.assert_not_called()
 
     @patch("src.systemd.hook.clear_rules")
     def test_main_stop(self, mock_clear: MagicMock) -> None:
@@ -557,10 +860,32 @@ class MainTests(unittest.TestCase):
         The 'stop' argument triggers clear_rules.
         """
 
-        with patch("sys.argv", ["hook.py", "stop"]):
+        with (
+            patch("src.systemd.hook.restore_system_resolver") as mock_restore,
+            patch("sys.argv", ["hook.py", "stop"]),
+        ):
             hook.main()
 
         mock_clear.assert_called_once()
+        mock_restore.assert_called_once()
+
+    @patch("src.systemd.hook.clear_rules")
+    def test_main_stop_restores_resolver_when_rule_cleanup_fails(
+        self, mock_clear: MagicMock
+    ) -> None:
+        """
+        Resolver restoration still runs when firewall cleanup raises an error.
+        """
+
+        mock_clear.side_effect = RuntimeError("cleanup failed")
+        with (
+            patch("src.systemd.hook.restore_system_resolver") as mock_restore,
+            patch("sys.argv", ["hook.py", "stop"]),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cleanup failed"):
+                hook.main()
+
+        mock_restore.assert_called_once()
 
     def test_main_missing_argument(self) -> None:
         """

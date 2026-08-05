@@ -107,6 +107,7 @@ def parse_addon_config(config_value: object) -> AddonConfig:
         "flow_history_keep_entries",
         "iptables",
         "log_level",
+        "manage_resolv_conf",
     }
     if extra_top_level_keys:
         keys = ", ".join(sorted(repr(key) for key in extra_top_level_keys))
