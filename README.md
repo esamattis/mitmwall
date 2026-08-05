@@ -33,6 +33,10 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
   configuration compatibility workaround. The original regular file or symlink
   is preserved for restoration.
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
+  - move mitmwall's filter `OUTPUT` jump and managed NAT rules ahead of
+    unrelated rules on every start, so an earlier terminal rule cannot bypass
+    enforcement
+  - keep custom and time-sync NAT bypasses ahead of the generic redirects
   - redirect outbound TCP port `80` and `443` traffic to the HTTP(S) proxy
   - redirect outbound TCP/UDP port `53` traffic to the DNS proxy
     - only allow root, APT's `_apt` sandbox user, the dedicated `mitmwall` user,

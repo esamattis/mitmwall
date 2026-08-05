@@ -41,6 +41,36 @@ COMMENT = "mitmwall-custom"
 # - Drop all other new outbound traffic so applications cannot bypass the proxies.
 
 
+def place_rule_first(
+    table_cmd: str, table: str, chain: str, rule_args: list[str]
+) -> None:
+    """
+    Place exactly one copy of a managed rule at the head of a built-in chain.
+
+    Removing all matching copies before insertion repairs rules left behind an
+    unrelated terminal rule and keeps repeated service starts idempotent.
+    """
+
+    while True:
+        check = subprocess.run(
+            [table_cmd, "-t", table, "-C", chain, *rule_args],
+            capture_output=True,
+        )
+        if check.returncode != 0:
+            break
+        _ = subprocess.run(
+            [table_cmd, "-t", table, "-D", chain, *rule_args],
+            capture_output=True,
+            check=True,
+        )
+
+    _ = subprocess.run(
+        [table_cmd, "-t", table, "-I", chain, "1", *rule_args],
+        capture_output=True,
+        check=True,
+    )
+
+
 def enable_forwarding() -> None:
     """
     Enable IPv4 and IPv6 forwarding so the kernel will route packets that are
@@ -93,13 +123,11 @@ def add_redirect_rule(table_cmd: str, dport: int) -> None:
     reachable on their real ports instead of being captured by mitmproxy.
     """
 
-    check = subprocess.run(
+    place_rule_first(
+        table_cmd,
+        "nat",
+        "OUTPUT",
         [
-            table_cmd,
-            "-t",
-            "nat",
-            "-C",
-            "OUTPUT",
             "-p",
             "tcp",
             "!",
@@ -127,46 +155,7 @@ def add_redirect_rule(table_cmd: str, dport: int) -> None:
             "--to-port",
             str(PROXY_PORT),
         ],
-        capture_output=True,
     )
-    if check.returncode != 0:
-        _ = subprocess.run(
-            [
-                table_cmd,
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "!",
-                "-o",
-                "lo",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                "0",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                USER,
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                APT_USER,
-                "--dport",
-                str(dport),
-                "-j",
-                "REDIRECT",
-                "--to-port",
-                str(PROXY_PORT),
-            ],
-            capture_output=True,
-            check=True,
-        )
 
 
 def remove_redirect_rule(table_cmd: str, dport: int) -> None:
@@ -263,13 +252,11 @@ def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
     loop back into the proxy.
     """
 
-    check = subprocess.run(
+    place_rule_first(
+        table_cmd,
+        "nat",
+        "OUTPUT",
         [
-            table_cmd,
-            "-t",
-            "nat",
-            "-C",
-            "OUTPUT",
             "-p",
             protocol,
             "-m",
@@ -299,48 +286,7 @@ def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
             "--to-port",
             str(DNS_PORT),
         ],
-        capture_output=True,
     )
-    if check.returncode != 0:
-        _ = subprocess.run(
-            [
-                table_cmd,
-                "-t",
-                "nat",
-                "-A",
-                "OUTPUT",
-                "-p",
-                protocol,
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                "0",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                USER,
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                "systemd-resolve",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                APT_USER,
-                "--dport",
-                "53",
-                "-j",
-                "REDIRECT",
-                "--to-port",
-                str(DNS_PORT),
-            ],
-            capture_output=True,
-            check=True,
-        )
 
 
 def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
@@ -540,15 +486,13 @@ def add_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
         if result.returncode != 0:
             continue
         ntp_uid = result.stdout.strip()
-        # Insert at the top of the nat OUTPUT chain so this rule matches
-        # before the broader REDIRECT rule that follows.
-        check = subprocess.run(
+        # Move the bypass to the top on every start so it remains ahead of both
+        # generic redirects and unrelated rules.
+        place_rule_first(
+            table_cmd,
+            "nat",
+            "OUTPUT",
             [
-                table_cmd,
-                "-t",
-                "nat",
-                "-C",
-                "OUTPUT",
                 "-p",
                 protocol,
                 "-m",
@@ -560,30 +504,7 @@ def add_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
                 "-j",
                 "ACCEPT",
             ],
-            capture_output=True,
         )
-        if check.returncode != 0:
-            _ = subprocess.run(
-                [
-                    table_cmd,
-                    "-t",
-                    "nat",
-                    "-I",
-                    "OUTPUT",
-                    "-p",
-                    protocol,
-                    "-m",
-                    "owner",
-                    "--uid-owner",
-                    ntp_uid,
-                    "--dport",
-                    "53",
-                    "-j",
-                    "ACCEPT",
-                ],
-                capture_output=True,
-                check=True,
-            )
 
 
 def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
@@ -902,18 +823,9 @@ def add_output_filter(table_cmd: str) -> None:
         check=True,
     )
 
-    # Attach the managed chain to OUTPUT once.  `-C` keeps service restarts
-    # idempotent while preserving the rule order after the first installation.
-    check_attach = subprocess.run(
-        [table_cmd, "-t", "filter", "-C", "OUTPUT", "-j", CHAIN],
-        capture_output=True,
-    )
-    if check_attach.returncode != 0:
-        _ = subprocess.run(
-            [table_cmd, "-t", "filter", "-A", "OUTPUT", "-j", CHAIN],
-            capture_output=True,
-            check=True,
-        )
+    # Reattach at the head on every start.  An earlier terminal rule in OUTPUT
+    # would otherwise bypass the fail-closed managed chain.
+    place_rule_first(table_cmd, "filter", "OUTPUT", ["-j", CHAIN])
 
 
 def remove_output_filter(table_cmd: str) -> None:
@@ -991,6 +903,13 @@ def add_rules() -> None:
 
     enable_forwarding()
 
+    # Every managed NAT rule is moved to the head.  Install generic redirects
+    # first, then bypasses, so bypasses retain their required higher precedence.
+    add_dns_redirect_rule("iptables", "udp")
+    add_dns_redirect_rule("iptables", "tcp")
+    add_dns_redirect_rule("ip6tables", "udp")
+    add_dns_redirect_rule("ip6tables", "tcp")
+
     add_redirect_rule("iptables", 80)
     add_redirect_rule("iptables", 443)
     add_redirect_rule("ip6tables", 80)
@@ -1000,11 +919,6 @@ def add_rules() -> None:
     add_ntp_dns_bypass_rule("iptables", "tcp")
     add_ntp_dns_bypass_rule("ip6tables", "udp")
     add_ntp_dns_bypass_rule("ip6tables", "tcp")
-
-    add_dns_redirect_rule("iptables", "udp")
-    add_dns_redirect_rule("iptables", "tcp")
-    add_dns_redirect_rule("ip6tables", "udp")
-    add_dns_redirect_rule("ip6tables", "tcp")
 
     add_output_filter("iptables")
     add_output_filter("ip6tables")
@@ -1167,13 +1081,11 @@ def add_nat_bypass_rule(table_cmd: str, network: str, port: int) -> None:
     specified network and port is not redirected to the transparent proxy.
     """
 
-    check = subprocess.run(
+    place_rule_first(
+        table_cmd,
+        "nat",
+        "OUTPUT",
         [
-            table_cmd,
-            "-t",
-            "nat",
-            "-C",
-            "OUTPUT",
             "-p",
             "tcp",
             "-d",
@@ -1187,32 +1099,7 @@ def add_nat_bypass_rule(table_cmd: str, network: str, port: int) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
     )
-    if check.returncode != 0:
-        _ = subprocess.run(
-            [
-                table_cmd,
-                "-t",
-                "nat",
-                "-I",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "-d",
-                network,
-                "--dport",
-                str(port),
-                "-m",
-                "comment",
-                "--comment",
-                COMMENT,
-                "-j",
-                "ACCEPT",
-            ],
-            capture_output=True,
-            check=True,
-        )
 
 
 def add_custom_rules() -> None:

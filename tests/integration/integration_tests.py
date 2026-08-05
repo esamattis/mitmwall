@@ -510,6 +510,35 @@ class MitmwallNetworkTests(unittest.TestCase):
                 direction_index = first_rule.index("--ctdir")
                 self.assertEqual(first_rule[direction_index + 1], "REPLY")
 
+    def test_managed_output_jump_is_first(self) -> None:
+        """
+        Verify IPv4 and IPv6 OUTPUT traffic enters mitmwall before other rules.
+        """
+
+        for table_command in ("iptables", "ip6tables"):
+            with self.subTest(table_command=table_command):
+                result = subprocess.run(
+                    [
+                        "sudo",
+                        "-n",
+                        table_command,
+                        "-t",
+                        "filter",
+                        "-S",
+                        "OUTPUT",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rules = [
+                    line
+                    for line in result.stdout.splitlines()
+                    if line.startswith("-A OUTPUT ")
+                ]
+                self.assertTrue(rules, "OUTPUT has no rules")
+                self.assertEqual(rules[0], "-A OUTPUT -j MITMWALL_OUTPUT")
+
     def test_custom_iptables_rule_allows_direct_tcp(self) -> None:
         """
         Verify that a custom iptables allow rule permits direct TCP connections.

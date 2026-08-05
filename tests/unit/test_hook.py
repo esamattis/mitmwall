@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from src.systemd import hook, resolv_conf as resolver
 
@@ -153,15 +153,85 @@ num  target     prot opt source               destination
         self.assertIsNone(hook.find_drop_line_number(result))
 
 
+class PlaceRuleFirstTests(unittest.TestCase):
+    """
+    Verify managed entry points are repaired at the head of built-in chains.
+    """
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_repositions_existing_ipv4_and_ipv6_rules(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        Existing rules are deleted and reinserted at position one for both families.
+        """
+
+        rule = ["-j", hook.CHAIN]
+        for table_cmd in ("iptables", "ip6tables"):
+            with self.subTest(table_cmd=table_cmd):
+                mock_run.reset_mock()
+                mock_run.side_effect = [
+                    subprocess.CompletedProcess(args=[], returncode=0),
+                    subprocess.CompletedProcess(args=[], returncode=0),
+                    subprocess.CompletedProcess(args=[], returncode=1),
+                    subprocess.CompletedProcess(args=[], returncode=0),
+                ]
+
+                hook.place_rule_first(table_cmd, "filter", "OUTPUT", rule)
+
+                self.assertEqual(
+                    [item.args[0] for item in mock_run.call_args_list],
+                    [
+                        [table_cmd, "-t", "filter", "-C", "OUTPUT", *rule],
+                        [table_cmd, "-t", "filter", "-D", "OUTPUT", *rule],
+                        [table_cmd, "-t", "filter", "-C", "OUTPUT", *rule],
+                        [
+                            table_cmd,
+                            "-t",
+                            "filter",
+                            "-I",
+                            "OUTPUT",
+                            "1",
+                            *rule,
+                        ],
+                    ],
+                )
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_removes_duplicate_rules_before_inserting_one(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        Repeated starts converge duplicate managed rules to one head rule.
+        """
+
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=1),
+            subprocess.CompletedProcess(args=[], returncode=0),
+        ]
+
+        hook.place_rule_first("iptables", "nat", "OUTPUT", ["-j", "REDIRECT"])
+
+        commands = [item.args[0] for item in mock_run.call_args_list]
+        self.assertEqual(sum("-D" in command for command in commands), 2)
+        self.assertEqual(sum("-I" in command for command in commands), 1)
+        self.assertEqual(commands[-1][5:7], ["1", "-j"])
+
+
 class OutputFilterConntrackTests(unittest.TestCase):
     """
     Verify the OUTPUT filter's conntrack direction restriction.
     """
 
+    @patch("src.systemd.hook.place_rule_first")
     @patch("src.systemd.hook.add_ntp_filter_rules")
     @patch("src.systemd.hook.subprocess.run")
     def test_first_accept_rule_only_allows_reply_direction(
-        self, mock_run: MagicMock, _mock_ntp: MagicMock
+        self, mock_run: MagicMock, _mock_ntp: MagicMock, mock_place: MagicMock
     ) -> None:
         """
         Established outbound flows do not bypass policy after a chain rebuild.
@@ -202,6 +272,9 @@ class OutputFilterConntrackTests(unittest.TestCase):
                 "ACCEPT",
             ],
             commands,
+        )
+        mock_place.assert_called_once_with(
+            "iptables", "filter", "OUTPUT", ["-j", hook.CHAIN]
         )
 
 
@@ -339,50 +412,104 @@ class AddNatBypassRuleTests(unittest.TestCase):
     Verify add_nat_bypass_rule inserts NAT bypass rules into the OUTPUT chain.
     """
 
-    @patch("src.systemd.hook.subprocess.run")
-    def test_inserts_at_top_when_not_exists(self, mock_run: MagicMock) -> None:
+    @patch("src.systemd.hook.place_rule_first")
+    def test_places_rule_at_top(self, mock_place: MagicMock) -> None:
         """
-        The NAT bypass rule is inserted at the top of OUTPUT when not present.
+        The NAT bypass uses the managed head-placement operation.
         """
-
-        check_result = subprocess.CompletedProcess(args=[], returncode=1, stdout="")
-        mock_run.return_value = check_result
 
         hook.add_nat_bypass_rule("iptables", "10.0.0.0/8", 443)
 
-        calls = mock_run.call_args_list
-        self.assertEqual(calls[-1][0][0], [
+        mock_place.assert_called_once_with(
             "iptables",
-            "-t",
             "nat",
-            "-I",
             "OUTPUT",
-            "-p",
-            "tcp",
-            "-d",
-            "10.0.0.0/8",
-            "--dport",
-            "443",
-            "-m",
-            "comment",
-            "--comment",
-            "mitmwall-custom",
-            "-j",
-            "ACCEPT",
-        ])
+            [
+                "-p",
+                "tcp",
+                "-d",
+                "10.0.0.0/8",
+                "--dport",
+                "443",
+                "-m",
+                "comment",
+                "--comment",
+                "mitmwall-custom",
+                "-j",
+                "ACCEPT",
+            ],
+        )
 
-    @patch("src.systemd.hook.subprocess.run")
-    def test_skips_when_already_exists(self, mock_run: MagicMock) -> None:
+
+class ManagedNatOrderingTests(unittest.TestCase):
+    """
+    Verify core redirects and bypasses use the required NAT precedence.
+    """
+
+    @patch("src.systemd.hook.place_rule_first")
+    def test_core_redirects_are_placed_first_for_ipv4_and_ipv6(
+        self, mock_place: MagicMock
+    ) -> None:
         """
-        The NAT bypass rule is skipped when it already exists.
+        IPv4 and IPv6 HTTP and DNS redirects are managed at the OUTPUT head.
         """
 
-        check_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
-        mock_run.return_value = check_result
+        for table_cmd in ("iptables", "ip6tables"):
+            hook.add_redirect_rule(table_cmd, 443)
+            hook.add_dns_redirect_rule(table_cmd, "udp")
 
-        hook.add_nat_bypass_rule("iptables", "10.0.0.0/8", 443)
+        self.assertEqual(mock_place.call_count, 4)
+        for invocation in mock_place.call_args_list:
+            self.assertEqual(invocation.args[1:3], ("nat", "OUTPUT"))
+        self.assertEqual(
+            [invocation.args[0] for invocation in mock_place.call_args_list],
+            ["iptables", "iptables", "ip6tables", "ip6tables"],
+        )
 
-        self.assertEqual(mock_run.call_count, 1)
+    def test_bypasses_are_installed_after_generic_redirects(self) -> None:
+        """
+        Head insertion leaves NTP and custom bypasses above generic redirects.
+        """
+
+        manager = MagicMock()
+        with (
+            patch("src.systemd.hook.enable_forwarding") as mock_forwarding,
+            patch("src.systemd.hook.add_dns_redirect_rule") as mock_dns,
+            patch("src.systemd.hook.add_redirect_rule") as mock_web,
+            patch("src.systemd.hook.add_ntp_dns_bypass_rule") as mock_ntp,
+            patch("src.systemd.hook.add_output_filter") as mock_filter,
+            patch("src.systemd.hook.add_custom_rules") as mock_custom,
+        ):
+            manager.attach_mock(mock_forwarding, "forwarding")
+            manager.attach_mock(mock_dns, "dns")
+            manager.attach_mock(mock_web, "web")
+            manager.attach_mock(mock_ntp, "ntp")
+            manager.attach_mock(mock_filter, "filter")
+            manager.attach_mock(mock_custom, "custom")
+
+            hook.add_rules()
+
+        self.assertEqual(
+            manager.mock_calls,
+            [
+                call.forwarding(),
+                call.dns("iptables", "udp"),
+                call.dns("iptables", "tcp"),
+                call.dns("ip6tables", "udp"),
+                call.dns("ip6tables", "tcp"),
+                call.web("iptables", 80),
+                call.web("iptables", 443),
+                call.web("ip6tables", 80),
+                call.web("ip6tables", 443),
+                call.ntp("iptables", "udp"),
+                call.ntp("iptables", "tcp"),
+                call.ntp("ip6tables", "udp"),
+                call.ntp("ip6tables", "tcp"),
+                call.filter("iptables"),
+                call.filter("ip6tables"),
+                call.custom(),
+            ],
+        )
 
 
 class AptSandboxBypassTests(unittest.TestCase):
@@ -424,10 +551,11 @@ class AptSandboxBypassTests(unittest.TestCase):
             ["-m", "owner", "!", "--uid-owner", hook.APT_USER],
         )
 
+    @patch("src.systemd.hook.place_rule_first")
     @patch("src.systemd.hook.add_ntp_filter_rules")
     @patch("src.systemd.hook.subprocess.run")
     def test_output_filter_allows_apt_user(
-        self, mock_run: MagicMock, _mock_ntp: MagicMock
+        self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
     ) -> None:
         """
         The fail-closed OUTPUT chain accepts sockets owned by _apt.
