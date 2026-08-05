@@ -16,7 +16,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import tomllib
 
@@ -136,6 +136,17 @@ class ForwardingState:
     ipv4_forwarding: int
     ipv6_forwarding: int
     ipv4_send_redirects: int
+
+
+@dataclass(frozen=True)
+class CustomRule:
+    """
+    A validated custom firewall bypass rule and its address family command.
+    """
+
+    table_cmd: Literal["iptables", "ip6tables"]
+    network: str
+    port: int
 
 
 def read_sysctl(name: str) -> int:
@@ -1265,10 +1276,13 @@ def ensure_web_rules_file() -> None:
     )
 
 
-def add_rules() -> None:
+def add_rules(custom_rules: list[CustomRule] | None = None) -> None:
     """
     Install the full transparent proxy firewall policy.
     """
+
+    if custom_rules is None:
+        custom_rules = parse_custom_rules()
 
     clear_legacy_redirect_rules()
     enable_forwarding()
@@ -1293,7 +1307,7 @@ def add_rules() -> None:
     add_output_filter("iptables")
     add_output_filter("ip6tables")
 
-    add_custom_rules()
+    add_custom_rules(custom_rules)
 
 
 def clear_rules() -> None:
@@ -1328,13 +1342,12 @@ def clear_rules() -> None:
 # ---------------------------------------------------------------------------
 
 
-def parse_custom_rules(config_path: Path = ADDON_CONFIG_FILE) -> list[tuple[str, int]]:
+def parse_custom_rules(config_path: Path = ADDON_CONFIG_FILE) -> list[CustomRule]:
     """
-    Parse custom iptables bypass rules from a TOML config file.
+    Parse and validate custom iptables bypass rules from a TOML config file.
 
-    Returns a list of (network, port) tuples for each [[iptables.bypass]]
-    entry.  If the file does not exist, the iptables key is missing, or
-    the bypass table is malformed, an empty list is returned.
+    Networks are normalized with host bits cleared. Missing optional sections
+    yield no rules, while every present bypass entry must be fully valid.
     """
 
     if not config_path.exists():
@@ -1346,40 +1359,53 @@ def parse_custom_rules(config_path: Path = ADDON_CONFIG_FILE) -> list[tuple[str,
     if not is_toml_table(config_value):
         return []
 
-    iptables_value = config_value.get("iptables")
-    if not is_toml_table(iptables_value):
+    if "iptables" not in config_value:
         return []
 
-    bypass_value = iptables_value.get("bypass")
-    if not isinstance(bypass_value, list):
+    error_prefix = f"invalid custom firewall configuration in {config_path}: "
+    iptables_value = config_value["iptables"]
+    if not is_toml_table(iptables_value):
+        raise ValueError(error_prefix + "'iptables' must be a table")
+
+    if "bypass" not in iptables_value:
         return []
+
+    bypass_value = iptables_value["bypass"]
+    if not isinstance(bypass_value, list):
+        raise ValueError(
+            error_prefix + "'iptables.bypass' must be an array of tables"
+        )
 
     bypass_rules = cast(list[object], bypass_value)
-    rules: list[tuple[str, int]] = []
-    for rule in bypass_rules:
+    rules: list[CustomRule] = []
+    for index, rule in enumerate(bypass_rules, start=1):
+        entry = f"[[iptables.bypass]] entry {index}"
         if not is_toml_table(rule):
-            continue
+            raise ValueError(error_prefix + f"{entry} must be a table")
         network = rule.get("network")
         port = rule.get("port")
-        if not isinstance(network, str) or not isinstance(port, int):
-            continue
-        rules.append((network, port))
+        if not isinstance(network, str):
+            raise ValueError(
+                error_prefix
+                + f"{entry} 'network' must be a valid IPv4 or IPv6 address or network"
+            )
+        try:
+            parsed_network = ipaddress.ip_network(network, strict=False)
+        except ValueError as error:
+            raise ValueError(
+                error_prefix + f"{entry} has invalid network {network!r}"
+            ) from error
+        if type(port) is not int or not 1 <= port <= 65535:
+            raise ValueError(
+                error_prefix
+                + f"{entry} 'port' must be an integer from 1 to 65535"
+            )
+
+        table_cmd: Literal["iptables", "ip6tables"]
+        table_cmd = "iptables" if parsed_network.version == 4 else "ip6tables"
+        rules.append(CustomRule(table_cmd, str(parsed_network), port))
 
     return rules
-
-
-def is_ipv4_network(network: str) -> bool:
-    """
-    Return whether a network string represents an IPv4 network.
-
-    Uses ``ipaddress.ip_network`` to parse and classify the address so that
-    malformed strings are rejected rather than silently forwarded to iptables.
-    """
-
-    try:
-        return ipaddress.ip_network(network, strict=False).version == 4
-    except ValueError:
-        return False
 
 
 def find_drop_line_number(result: subprocess.CompletedProcess[str]) -> str | None:
@@ -1471,26 +1497,23 @@ def add_nat_bypass_rule(table_cmd: str, network: str, port: int) -> None:
     )
 
 
-def add_custom_rules() -> None:
+def add_custom_rules(rules: list[CustomRule] | None = None) -> None:
     """
     Read the config and insert all custom bypass rules into MITMWALL_OUTPUT.
 
     Existing custom rules are cleared first so repeated runs are idempotent.
     """
 
-    rules = parse_custom_rules()
+    if rules is None:
+        rules = parse_custom_rules()
     if not rules:
         return
 
     clear_custom_rules()
 
-    for network, port in rules:
-        if is_ipv4_network(network):
-            add_nat_bypass_rule("iptables", network, port)
-            add_rule("iptables", CHAIN, network, port)
-        else:
-            add_nat_bypass_rule("ip6tables", network, port)
-            add_rule("ip6tables", CHAIN, network, port)
+    for rule in rules:
+        add_nat_bypass_rule(rule.table_cmd, rule.network, rule.port)
+        add_rule(rule.table_cmd, CHAIN, rule.network, rule.port)
 
 
 def remove_comment_rules(table_cmd: str, table: str, chain: str) -> None:
@@ -1563,10 +1586,11 @@ def main() -> None:
 
     action = sys.argv[1]
     if action == "start":
+        custom_rules = parse_custom_rules()
         try:
             configure_system_resolver()
             ensure_web_rules_file()
-            add_rules()
+            add_rules(custom_rules)
         except BaseException as start_error:
             try:
                 _restored = restore_forwarding()

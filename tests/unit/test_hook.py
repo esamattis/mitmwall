@@ -27,24 +27,30 @@ class ParseCustomRulesTests(unittest.TestCase):
 
     def test_valid_iptables_bypass_rules(self) -> None:
         """
-        Parse IPv4 and IPv6 bypass rules from a well-formed config file.
+        IPv4, IPv6, host bits, and boundary ports are parsed and normalized.
         """
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
             _ = file.write("""
 [[iptables.bypass]]
-network = "192.168.5.0/24"
-port = 1234
+network = "192.168.5.129/24"
+port = 1
 
 [[iptables.bypass]]
-network = "2001:db8::/32"
-port = 443
+network = "2001:0db8::1"
+port = 65535
 """)
             path = Path(file.name)
 
         try:
             rules = hook.parse_custom_rules(path)
-            self.assertEqual(rules, [("192.168.5.0/24", 1234), ("2001:db8::/32", 443)])
+            self.assertEqual(
+                rules,
+                [
+                    hook.CustomRule("iptables", "192.168.5.0/24", 1),
+                    hook.CustomRule("ip6tables", "2001:db8::1/128", 65535),
+                ],
+            )
         finally:
             path.unlink()
 
@@ -63,62 +69,73 @@ port = 443
         finally:
             path.unlink()
 
-    def test_malformed_bypass_entries_are_skipped(self) -> None:
+    def test_malformed_network_is_rejected(self) -> None:
         """
-        Entries missing network or port are ignored.
+        A value that is neither an IPv4 nor IPv6 network is a configuration error.
         """
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
             _ = file.write("""
 [[iptables.bypass]]
-network = "192.168.1.0/24"
-port = "not-an-int"
-
-[[iptables.bypass]]
-network = "192.168.2.0/24"
+network = "not-a-network"
 port = 8080
 """)
             path = Path(file.name)
 
         try:
-            rules = hook.parse_custom_rules(path)
-            self.assertEqual(rules, [("192.168.2.0/24", 8080)])
+            with self.assertRaisesRegex(
+                ValueError,
+                r"invalid custom firewall configuration.*entry 1 has invalid network 'not-a-network'",
+            ):
+                _ = hook.parse_custom_rules(path)
         finally:
             path.unlink()
 
-
-class IsIPv4NetworkTests(unittest.TestCase):
-    """
-    Verify IPv4/IPv6 network detection.
-    """
-
-    def test_ipv4_network(self) -> None:
+    def test_invalid_ports_are_rejected(self) -> None:
         """
-        A dotted-decimal network is identified as IPv4.
+        Booleans, zero, negatives, and values above 65535 are invalid ports.
         """
 
-        self.assertTrue(hook.is_ipv4_network("192.168.0.0/16"))
+        for port in ("true", "0", "-1", "65536"):
+            with self.subTest(port=port):
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".toml", delete=False
+                ) as file:
+                    config_text = (
+                        f'[[iptables.bypass]]\nnetwork = "192.0.2.1"\nport = {port}\n'
+                    )
+                    _ = file.write(config_text)
+                    path = Path(file.name)
 
-    def test_ipv6_network(self) -> None:
+                try:
+                    with self.assertRaisesRegex(
+                        ValueError, r"'port' must be an integer from 1 to 65535"
+                    ):
+                        _ = hook.parse_custom_rules(path)
+                finally:
+                    path.unlink()
+
+    def test_incomplete_entry_is_rejected_instead_of_skipped(self) -> None:
         """
-        A colon-containing network is identified as IPv6.
+        One invalid entry rejects the configuration even when another is valid.
         """
 
-        self.assertFalse(hook.is_ipv4_network("2001:db8::/32"))
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
+            _ = file.write("""
+[[iptables.bypass]]
+network = "192.0.2.1"
 
-    def test_ipv4_mapped_ipv6(self) -> None:
-        """
-        An IPv4-mapped IPv6 address is identified as IPv6.
-        """
+[[iptables.bypass]]
+network = "2001:db8::/32"
+port = 443
+""")
+            path = Path(file.name)
 
-        self.assertFalse(hook.is_ipv4_network("::ffff:192.168.1.0/24"))
-
-    def test_garbage_string(self) -> None:
-        """
-        A malformed string that is neither IPv4 nor IPv6 returns False.
-        """
-
-        self.assertFalse(hook.is_ipv4_network("not-a-network"))
+        try:
+            with self.assertRaisesRegex(ValueError, r"entry 1 'port' must be"):
+                _ = hook.parse_custom_rules(path)
+        finally:
+            path.unlink()
 
 
 class FindDropLineNumberTests(unittest.TestCase):
@@ -1050,6 +1067,7 @@ class ManagedNatOrderingTests(unittest.TestCase):
             patch("src.systemd.hook.add_ntp_dns_bypass_rule") as mock_ntp,
             patch("src.systemd.hook.add_output_filter") as mock_filter,
             patch("src.systemd.hook.add_custom_rules") as mock_custom,
+            patch("src.systemd.hook.parse_custom_rules", return_value=[]),
         ):
             manager.attach_mock(mock_forwarding, "forwarding")
             manager.attach_mock(mock_dns, "dns")
@@ -1078,9 +1096,30 @@ class ManagedNatOrderingTests(unittest.TestCase):
                 call.ntp("ip6tables", "tcp"),
                 call.filter("iptables"),
                 call.filter("ip6tables"),
-                call.custom(),
+                call.custom([]),
             ],
         )
+
+    def test_custom_rules_are_validated_before_firewall_mutation(self) -> None:
+        """
+        Invalid custom configuration fails before legacy cleanup or setup begins.
+        """
+
+        with (
+            patch(
+                "src.systemd.hook.parse_custom_rules",
+                side_effect=ValueError("invalid custom firewall configuration"),
+            ),
+            patch("src.systemd.hook.clear_legacy_redirect_rules") as mock_legacy,
+            patch("src.systemd.hook.enable_forwarding") as mock_forwarding,
+            patch("src.systemd.hook.run_xtables") as mock_xtables,
+        ):
+            with self.assertRaisesRegex(ValueError, "invalid custom firewall"):
+                hook.add_rules()
+
+        mock_legacy.assert_not_called()
+        mock_forwarding.assert_not_called()
+        mock_xtables.assert_not_called()
 
 
 class AptSandboxBypassTests(unittest.TestCase):
@@ -1183,8 +1222,8 @@ class AddCustomRulesTests(unittest.TestCase):
         """
 
         mock_parse.return_value = [
-            ("192.168.0.0/16", 80),
-            ("2001:db8::/32", 443),
+            hook.CustomRule("iptables", "192.168.0.0/16", 80),
+            hook.CustomRule("ip6tables", "2001:db8::/32", 443),
         ]
 
         hook.add_custom_rules()
@@ -1582,12 +1621,38 @@ class MainTests(unittest.TestCase):
 
         with (
             patch("src.systemd.hook.configure_system_resolver") as mock_configure,
+            patch("src.systemd.hook.parse_custom_rules", return_value=[]) as mock_parse,
             patch("sys.argv", ["hook.py", "start"]),
         ):
             hook.main()
 
+        mock_parse.assert_called_once()
         mock_configure.assert_called_once()
-        mock_add.assert_called_once()
+        mock_add.assert_called_once_with([])
+
+    def test_main_rejects_custom_rules_before_startup_mutation(self) -> None:
+        """
+        Startup configuration validation precedes setup and rollback mutations.
+        """
+
+        with (
+            patch(
+                "src.systemd.hook.parse_custom_rules",
+                side_effect=ValueError("invalid custom firewall configuration"),
+            ),
+            patch("src.systemd.hook.configure_system_resolver") as mock_configure,
+            patch("src.systemd.hook.ensure_web_rules_file") as mock_ensure,
+            patch("src.systemd.hook.add_rules") as mock_add,
+            patch("src.systemd.hook.restore_forwarding") as mock_restore,
+            patch("sys.argv", ["hook.py", "start"]),
+        ):
+            with self.assertRaisesRegex(ValueError, "invalid custom firewall"):
+                hook.main()
+
+        mock_configure.assert_not_called()
+        mock_ensure.assert_not_called()
+        mock_add.assert_not_called()
+        mock_restore.assert_not_called()
 
     @patch("src.systemd.hook.ensure_web_rules_file")
     @patch("src.systemd.hook.add_rules")
