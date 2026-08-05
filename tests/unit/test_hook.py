@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest.mock import MagicMock, patch
 
 from src.systemd import hook
@@ -330,6 +331,77 @@ class AddNatBypassRuleTests(unittest.TestCase):
         hook.add_nat_bypass_rule("iptables", "10.0.0.0/8", 443)
 
         self.assertEqual(mock_run.call_count, 1)
+
+
+class AptSandboxBypassTests(unittest.TestCase):
+    """
+    Verify that APT's sandbox user retains root-invoked network access.
+    """
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_http_redirect_excludes_apt_user(self, mock_run: MagicMock) -> None:
+        """
+        HTTP traffic owned by _apt is not redirected into the proxy.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1)
+
+        hook.add_redirect_rule("iptables", 80)
+
+        command = cast(list[str], mock_run.call_args_list[-1][0][0])
+        apt_index = command.index(hook.APT_USER)
+        self.assertEqual(
+            command[apt_index - 4 : apt_index + 1],
+            ["-m", "owner", "!", "--uid-owner", hook.APT_USER],
+        )
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_dns_redirect_excludes_apt_user(self, mock_run: MagicMock) -> None:
+        """
+        DNS traffic owned by _apt is not redirected into the DNS proxy.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1)
+
+        hook.add_dns_redirect_rule("iptables", "udp")
+
+        command = cast(list[str], mock_run.call_args_list[-1][0][0])
+        apt_index = command.index(hook.APT_USER)
+        self.assertEqual(
+            command[apt_index - 4 : apt_index + 1],
+            ["-m", "owner", "!", "--uid-owner", hook.APT_USER],
+        )
+
+    @patch("src.systemd.hook.add_ntp_filter_rules")
+    @patch("src.systemd.hook.subprocess.run")
+    def test_output_filter_allows_apt_user(
+        self, mock_run: MagicMock, _mock_ntp: MagicMock
+    ) -> None:
+        """
+        The fail-closed OUTPUT chain accepts sockets owned by _apt.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+        hook.add_output_filter("iptables")
+
+        commands = [call[0][0] for call in mock_run.call_args_list]
+        self.assertIn(
+            [
+                "iptables",
+                "-t",
+                "filter",
+                "-A",
+                hook.CHAIN,
+                "-m",
+                "owner",
+                "--uid-owner",
+                hook.APT_USER,
+                "-j",
+                "ACCEPT",
+            ],
+            commands,
+        )
 
 
 class AddCustomRulesTests(unittest.TestCase):

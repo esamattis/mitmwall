@@ -19,6 +19,7 @@ from src.addon.constants import ADDON_CONFIG_FILE, WEB_RULES_FILE
 from src.utils.toml_helpers import is_toml_table
 
 USER = "mitmwall"
+APT_USER = "_apt"
 PROXY_PORT = 58080
 DNS_PORT = 58053
 WEB_PORT = 58081
@@ -31,7 +32,8 @@ COMMENT = "mitmwall-custom"
 # Policy installed by the "start" action:
 # - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
-# - Allow root and the proxy user to make outbound upstream connections.
+# - Allow root, APT's sandbox user, and the proxy user to make outbound upstream
+#   connections.
 # - Redirect outbound DNS from non-proxy users to the local DNS proxy.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
 # - Allow installed system time synchronizers to reach upstream NTP and DNS.
@@ -73,13 +75,14 @@ def enable_forwarding() -> None:
 
 def add_redirect_rule(table_cmd: str, dport: int) -> None:
     """
-    Capture direct outbound HTTP/HTTPS attempts from users other than root and
-    the proxy user, then transparently redirect them to the local proxy.
+    Capture direct outbound HTTP/HTTPS attempts from users other than root, the
+    proxy user, and APT's sandbox user, then redirect them to the local proxy.
 
-    Install the NAT redirect idempotently.  The owner matches exclude root
-    and the dedicated proxy user.  mitmproxy itself runs as ``USER`` and must
-    be able to open the real upstream HTTP/HTTPS connection; redirecting the
-    proxy's own traffic back into the proxy would create a loop.  Root is also
+    Install the NAT redirect idempotently.  The owner matches exclude root,
+    APT's sandbox user, and the dedicated proxy user.  mitmproxy itself runs as
+    ``USER`` and must be able to open the real upstream HTTP/HTTPS connection;
+    redirecting the proxy's own traffic back into the proxy would create a loop.
+    Root is also
     allowed to administer the host and troubleshoot networking without being
     captured by the transparent proxy.
 
@@ -113,6 +116,11 @@ def add_redirect_rule(table_cmd: str, dport: int) -> None:
             "!",
             "--uid-owner",
             USER,
+            "-m",
+            "owner",
+            "!",
+            "--uid-owner",
+            APT_USER,
             "--dport",
             str(dport),
             "-j",
@@ -145,6 +153,11 @@ def add_redirect_rule(table_cmd: str, dport: int) -> None:
                 "!",
                 "--uid-owner",
                 USER,
+                "-m",
+                "owner",
+                "!",
+                "--uid-owner",
+                APT_USER,
                 "--dport",
                 str(dport),
                 "-j",
@@ -187,6 +200,11 @@ def remove_redirect_rule(table_cmd: str, dport: int) -> None:
                 "!",
                 "--uid-owner",
                 USER,
+                "-m",
+                "owner",
+                "!",
+                "--uid-owner",
+                APT_USER,
                 "--dport",
                 str(dport),
                 "-j",
@@ -220,6 +238,11 @@ def remove_redirect_rule(table_cmd: str, dport: int) -> None:
                 "!",
                 "--uid-owner",
                 USER,
+                "-m",
+                "owner",
+                "!",
+                "--uid-owner",
+                APT_USER,
                 "--dport",
                 str(dport),
                 "-j",
@@ -236,8 +259,9 @@ def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
     """
     Capture DNS attempts from ordinary users, including queries aimed at local
     resolvers such as 127.0.0.53, and send them to mitmproxy's DNS mode listener.
-    Exclude root, mitmproxy, and systemd-resolved so administration, DNS proxy
-    upstream resolution, and resolver recursion do not loop back into the proxy.
+    Exclude root, APT's sandbox user, mitmproxy, and systemd-resolved so package
+    administration, DNS proxy upstream resolution, and resolver recursion do not
+    loop back into the proxy.
     """
 
     check = subprocess.run(
@@ -264,6 +288,11 @@ def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
             "!",
             "--uid-owner",
             "systemd-resolve",
+            "-m",
+            "owner",
+            "!",
+            "--uid-owner",
+            APT_USER,
             "--dport",
             "53",
             "-j",
@@ -298,6 +327,11 @@ def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
                 "!",
                 "--uid-owner",
                 "systemd-resolve",
+                "-m",
+                "owner",
+                "!",
+                "--uid-owner",
+                APT_USER,
                 "--dport",
                 "53",
                 "-j",
@@ -340,6 +374,11 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
                 "!",
                 "--uid-owner",
                 "systemd-resolve",
+                "-m",
+                "owner",
+                "!",
+                "--uid-owner",
+                APT_USER,
                 "--dport",
                 "53",
                 "-j",
@@ -375,6 +414,11 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
                 "!",
                 "--uid-owner",
                 "systemd-resolve",
+                "-m",
+                "owner",
+                "!",
+                "--uid-owner",
+                APT_USER,
                 "--dport",
                 "53",
                 "-j",
@@ -607,10 +651,10 @@ def add_output_filter(table_cmd: str) -> None:
     """
     Enforce the outbound allowlist.  Established/related packets are allowed so
     replies from inbound connections (for example SSH) are not broken.  The proxy
-    user and root are allowed to reach the network, loopback traffic is allowed so
-    localhost services remain reachable, clients are allowed to reach the local
-    HTTP proxy, DNS proxy, and web UI on this host, and every other new outbound
-    connection is blocked.
+    user, root, and APT's sandbox user are allowed to reach the network, loopback
+    traffic is allowed so localhost services remain reachable, clients are allowed
+    to reach the local HTTP proxy, DNS proxy, and web UI on this host, and every
+    other new outbound connection is blocked.
     """
 
     check = subprocess.run(
@@ -667,6 +711,27 @@ def add_output_filter(table_cmd: str) -> None:
             "owner",
             "--uid-owner",
             "0",
+            "-j",
+            "ACCEPT",
+        ],
+        capture_output=True,
+        check=True,
+    )
+
+    # APT intentionally drops its download workers from root to _apt.  Preserve
+    # that sandbox while retaining the unrestricted package-management behavior
+    # expected when an administrator invokes APT as root.
+    _ = subprocess.run(
+        [
+            table_cmd,
+            "-t",
+            "filter",
+            "-A",
+            CHAIN,
+            "-m",
+            "owner",
+            "--uid-owner",
+            APT_USER,
             "-j",
             "ACCEPT",
         ],
@@ -853,9 +918,10 @@ def remove_output_filter(table_cmd: str) -> None:
     """
     Remove the outbound allowlist/blocklist chain installed by the "start" action.
     That chain allows established/related packets so inbound services such as SSH
-    keep working, allows root and the proxy user to reach upstream hosts, allows
-    loopback traffic, allows other users to connect to the local HTTP proxy, DNS
-    proxy, and web UI ports on this host, and blocks all other new outbound traffic.
+    keep working, allows root, APT's sandbox user, and the proxy user to reach
+    upstream hosts, allows loopback traffic, allows other users to connect to the
+    local HTTP proxy, DNS proxy, and web UI ports on this host, and blocks all other
+    new outbound traffic.
     """
 
     while True:

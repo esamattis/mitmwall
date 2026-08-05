@@ -28,10 +28,13 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
   - redirect outbound TCP port `80` and `443` traffic to the HTTP(S) proxy
   - redirect outbound TCP/UDP port `53` traffic to the DNS proxy
-    - only allow root, the dedicated `mitmwall` user, `systemd-resolve`, and
-      installed time-sync service users to make required upstream connections
+    - only allow root, APT's `_apt` sandbox user, the dedicated `mitmwall` user,
+      `systemd-resolve`, and installed time-sync service users to make required
+      upstream connections
       - the proxy is running as the `mitmwall` user
       - root is left unrestricted for host administration and troubleshooting
+      - `_apt` is left unrestricted because root-invoked APT download workers
+        intentionally drop privileges to that dedicated user
       - `systemd-resolve` is left able to perform resolver recursion without
         looping back into the DNS proxy
       - installed time-sync service users such as `systemd-timesync`, `_chrony`,
@@ -177,9 +180,10 @@ sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 mitmwall runs mitmproxy in both transparent HTTP(S) mode and DNS mode. The
 firewall redirects ordinary users' TCP/UDP port 53 traffic, including attempts to
 query local resolvers such as `127.0.0.53` or public resolvers such as `1.1.1.1`,
-to mitmproxy's local DNS listener. Root, the `mitmwall` proxy user, and the
-`systemd-resolve` user are excluded so administration, proxy upstream lookups,
-and system resolver recursion do not loop back into the proxy.
+to mitmproxy's local DNS listener. Root, APT's `_apt` sandbox user, the
+`mitmwall` proxy user, and the `systemd-resolve` user are excluded so package
+administration, proxy upstream lookups, and system resolver recursion do not
+loop back into the proxy.
 
 By default, the mitmproxy addon applies the same rule files in
 `/etc/mitmwall/rules.d` to DNS queries before forwarding them upstream. DNS
@@ -198,12 +202,15 @@ redirection rules.
 
 Well, first of, AI agents helped creating this. So there is that 😅
 
-The security model relies on Linux user permissions: Only root and the
-`mitmwall` user can access the network freely. Root is intentionally exempt so
-administrators can manage and troubleshoot the host without going through the
-proxy. So if the attacker can do privilege escalation:
+The security model relies on Linux user permissions: Only root, the dedicated
+`mitmwall` user, and APT's dedicated `_apt` sandbox user can access the network
+freely. Root is intentionally exempt so administrators can manage and
+troubleshoot the host without going through the proxy. `_apt` is exempt so APT
+can retain its normal privilege separation when invoked by root. So if the
+attacker can do privilege escalation:
 
   - to the `mitmwall` user they can access the network
+  - to the `_apt` user they can access the network
   - to root they can access the network and can just stop the service
 
 ### DNS-based exfiltration
