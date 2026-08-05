@@ -222,6 +222,95 @@ class PlaceRuleFirstTests(unittest.TestCase):
         self.assertEqual(commands[-1][5:7], ["1", "-j"])
 
 
+class LegacyRedirectCleanupTests(unittest.TestCase):
+    """
+    Verify cleanup recognizes exact untagged redirect forms from old helpers.
+    """
+
+    @patch("src.systemd.hook.remove_legacy_rule_copies")
+    def test_removes_all_shipped_legacy_redirect_forms(
+        self, mock_remove: MagicMock
+    ) -> None:
+        """
+        IPv4 and IPv6 web and DNS signatures from prior releases are removed.
+        """
+
+        hook.clear_legacy_redirect_rules()
+
+        self.assertEqual(mock_remove.call_count, 16)
+        for table_cmd in ("iptables", "ip6tables"):
+            mock_remove.assert_any_call(
+                table_cmd,
+                hook.legacy_redirect_rule_args(
+                    "tcp", 80, hook.PROXY_PORT, (hook.USER,)
+                ),
+            )
+            mock_remove.assert_any_call(
+                table_cmd,
+                hook.legacy_redirect_rule_args(
+                    "tcp",
+                    443,
+                    hook.PROXY_PORT,
+                    ("0", hook.USER),
+                    exclude_loopback=True,
+                ),
+            )
+            for protocol in ("udp", "tcp"):
+                mock_remove.assert_any_call(
+                    table_cmd,
+                    hook.legacy_redirect_rule_args(
+                        protocol,
+                        53,
+                        hook.DNS_PORT,
+                        ("0", hook.USER, "systemd-resolve"),
+                    ),
+                )
+
+    @patch("src.systemd.hook.remove_legacy_rule_copies")
+    def test_does_not_treat_current_redirects_as_legacy(
+        self, mock_remove: MagicMock
+    ) -> None:
+        """
+        Legacy migration leaves current APT-excluding forms to normal cleanup.
+        """
+
+        hook.clear_legacy_redirect_rules()
+
+        removed_rules = [
+            cast(list[str], invocation.args[1])
+            for invocation in mock_remove.call_args_list
+        ]
+        self.assertTrue(removed_rules)
+        self.assertTrue(all(hook.APT_USER not in rule for rule in removed_rules))
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_removes_every_copy_by_exact_rule_syntax(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        Duplicate legacy rules are checked and deleted until none remain.
+        """
+
+        mock_run.side_effect = [
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=0),
+            subprocess.CompletedProcess(args=[], returncode=1),
+        ]
+        rule = hook.legacy_redirect_rule_args(
+            "tcp", 443, hook.PROXY_PORT, ("0", hook.USER), exclude_loopback=True
+        )
+
+        hook.remove_legacy_rule_copies("iptables", rule)
+
+        commands = [invocation.args[0] for invocation in mock_run.call_args_list]
+        delete_command = ["iptables", "-t", "nat", "-D", "OUTPUT", *rule]
+        check_command = ["iptables", "-t", "nat", "-C", "OUTPUT", *rule]
+        self.assertEqual(commands.count(delete_command), 2)
+        self.assertEqual(commands[-1], check_command)
+
+
 class OutputFilterConntrackTests(unittest.TestCase):
     """
     Verify the OUTPUT filter's conntrack direction restriction.

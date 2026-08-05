@@ -376,6 +376,93 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
         )
 
 
+def legacy_redirect_rule_args(
+    protocol: str,
+    dport: int,
+    target_port: int,
+    excluded_users: tuple[str, ...],
+    *,
+    exclude_loopback: bool = False,
+) -> list[str]:
+    """
+    Reconstruct an exact untagged redirect signature from an older helper.
+    """
+
+    rule_args = ["-p", protocol]
+    if exclude_loopback:
+        rule_args.extend(["!", "-o", "lo"])
+    for excluded_user in excluded_users:
+        rule_args.extend(["-m", "owner", "!", "--uid-owner", excluded_user])
+    rule_args.extend(
+        [
+            "--dport",
+            str(dport),
+            "-j",
+            "REDIRECT",
+            "--to-port",
+            str(target_port),
+        ]
+    )
+    return rule_args
+
+
+def remove_legacy_rule_copies(table_cmd: str, rule_args: list[str]) -> None:
+    """
+    Remove every exact copy of a historical rule from the NAT OUTPUT chain.
+    """
+
+    while True:
+        check = subprocess.run(
+            [table_cmd, "-t", "nat", "-C", "OUTPUT", *rule_args],
+            capture_output=True,
+        )
+        if check.returncode != 0:
+            break
+        _ = subprocess.run(
+            [table_cmd, "-t", "nat", "-D", "OUTPUT", *rule_args],
+            capture_output=True,
+            check=True,
+        )
+
+
+def clear_legacy_redirect_rules() -> None:
+    """
+    Remove untagged redirect forms installed by historical mitmwall helpers.
+
+    These exact signatures cover web rules before loopback, root, and APT
+    exclusions were added, plus DNS rules from before the APT exclusion.
+    """
+
+    for table_cmd in ("iptables", "ip6tables"):
+        for dport in (80, 443):
+            for excluded_users, exclude_loopback in (
+                ((USER,), False),
+                ((USER,), True),
+                (("0", USER), True),
+            ):
+                remove_legacy_rule_copies(
+                    table_cmd,
+                    legacy_redirect_rule_args(
+                        "tcp",
+                        dport,
+                        PROXY_PORT,
+                        excluded_users,
+                        exclude_loopback=exclude_loopback,
+                    ),
+                )
+
+        for protocol in ("udp", "tcp"):
+            remove_legacy_rule_copies(
+                table_cmd,
+                legacy_redirect_rule_args(
+                    protocol,
+                    53,
+                    DNS_PORT,
+                    ("0", USER, "systemd-resolve"),
+                ),
+            )
+
+
 def add_ntp_filter_rules(table_cmd: str) -> None:
     """
     Allow installed Ubuntu time synchronization services to reach upstream NTP.
@@ -901,6 +988,7 @@ def add_rules() -> None:
     Install the full transparent proxy firewall policy.
     """
 
+    clear_legacy_redirect_rules()
     enable_forwarding()
 
     # Every managed NAT rule is moved to the head.  Install generic redirects
@@ -931,6 +1019,7 @@ def clear_rules() -> None:
     Remove all firewall rules installed by the "start" action.
     """
 
+    clear_legacy_redirect_rules()
     clear_custom_rules()
 
     remove_redirect_rule("iptables", 80)

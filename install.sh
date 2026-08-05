@@ -92,6 +92,17 @@ trap 'rm -rf "$tmpdir"' EXIT
 
 info "starting installation from $scriptdir for architecture $arch"
 
+# Record the service state before changing any managed files. An active service
+# must be stopped while its currently installed unit and hook are still intact,
+# otherwise ExecStopPost could run new cleanup code against rules installed by
+# an older helper. Keep it stopped if any later installation step fails.
+service_was_active=0
+if systemctl is-active --quiet mitmwall.service; then
+    service_was_active=1
+    info "stopping active mitmwall service before replacing installed artifacts"
+    systemctl stop mitmwall.service
+fi
+
 # Create the dedicated runtime user if it does not already exist. mitmproxy's
 # config and generated CA material are kept under /opt/mitmwall/mitmweb and are
 # referenced explicitly via confdir, so the account's OS home is not used for
@@ -174,6 +185,13 @@ install -m 0644 "$scriptdir"/src/__init__.py "$addon_dir/"
 install -m 0644 "$scriptdir"/src/addon/*.py "$addon_dir/addon/"
 install -m 0644 "$scriptdir"/src/systemd/__init__.py "$scriptdir"/src/systemd/resolv_conf.py "$systemd_dir/"
 install -m 0644 "$scriptdir"/src/utils/*.py "$addon_dir/utils/"
+
+# Repair installations where an earlier upgrade replaced hook.py before stopping
+# the service, leaving historical untagged redirects that exact rule cleanup did
+# not recognize. The service remains inactive while the new helper removes both
+# current and known legacy rule forms and restores any saved resolver state.
+info "cleaning stale mitmwall firewall rules from previous installations"
+"$optdir/hook.py" stop
 
 # Install the repository-provided example rules into the rules directory. Rule
 # files are loaded in alphabetical filename order, so the numeric prefix gives
@@ -329,13 +347,13 @@ $environment_values
 EOF
 install -m 0644 "$tmpdir/profile" "$profile_file"
 
-# If this install is updating an already-running service, restart it so the new
-# unit file, helper scripts, mitmproxy binaries, addon code, rules, and trust
-# integration take effect. Leave inactive installations stopped so fresh installs
-# do not unexpectedly begin changing network traffic.
-if systemctl is-active --quiet mitmwall; then
-    info "mitmwall already runnning, restarting for the updates to take effect"
-    systemctl restart mitmwall
+# Restore the pre-install service state only after every installation step has
+# succeeded. A failed install therefore cannot run the service with a mixture of
+# old and new artifacts. Leave previously inactive and fresh installations stopped.
+if [ "$service_was_active" -eq 1 ]; then
+    info "restoring mitmwall service after successful installation"
+    systemctl start mitmwall.service
+    systemctl is-active --quiet mitmwall.service
 fi
 
 # Print next-step commands instead of enabling or starting the service
