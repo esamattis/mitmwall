@@ -50,6 +50,7 @@ FORWARD_GUARD_COMMENT = "mitmwall-forwarding-guard"
 # - Redirect outbound DNS from non-proxy users to the local DNS proxy.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
 # - Allow installed system time synchronizers to reach upstream NTP and DNS.
+# - Allow ICMPv6 so the kernel can maintain IPv6 connectivity.
 # - Allow all loopback traffic so localhost services remain reachable.
 # - Allow other users to connect only to the local proxy, DNS proxy, and web UI ports on this host.
 # - Drop all other new outbound traffic so applications cannot bypass the proxies.
@@ -947,9 +948,10 @@ def add_output_filter(table_cmd: str) -> None:
     Enforce the outbound allowlist.  Reply-direction established/related packets
     are allowed so inbound connections (for example SSH) are not broken.  The
     proxy user, root, and APT's sandbox user are allowed to reach the network,
-    loopback traffic is allowed so localhost services remain reachable, clients
-    are allowed to reach the local HTTP proxy, DNS proxy, and web UI on this host,
-    and every other outbound packet is blocked.
+    ICMPv6 control traffic is allowed for the IPv6 stack, loopback traffic is
+    allowed so localhost services remain reachable, clients are allowed to reach
+    the local HTTP proxy, DNS proxy, and web UI on this host, and every other
+    outbound packet is blocked.
     """
 
     existing_chain = probe_xtables(
@@ -1072,6 +1074,28 @@ def add_output_filter(table_cmd: str) -> None:
     # (add_ntp_dns_bypass_rule); this only grants permission for the already-
     # bypassed packets to leave the host.
     add_ntp_filter_rules(table_cmd)
+
+    if table_cmd == "ip6tables":
+        # ICMPv6 is part of the IPv6 control plane, including Neighbor Discovery,
+        # router discovery, address configuration, and Path MTU Discovery. RFC
+        # 4890's required and recommended messages extend beyond the familiar
+        # error and ND types, and a fixed type list is prone to breaking current
+        # or future Linux IPv6 behavior. Allow the complete protocol instead.
+        # Under mitmwall's threat model, unprivileged processes lack CAP_NET_RAW;
+        # Linux ping sockets can emit only echo requests, not arbitrary ICMPv6.
+        _ = run_xtables(
+            table_cmd,
+            [
+                "-t",
+                "filter",
+                "-A",
+                CHAIN,
+                "-p",
+                "ipv6-icmp",
+                "-j",
+                "ACCEPT",
+            ],
+        )
 
     # Permit connections to services on this machine.  This keeps localhost and
     # other loopback traffic working while the default policy below still blocks

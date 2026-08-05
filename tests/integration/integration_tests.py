@@ -6,6 +6,7 @@ Integration tests for mitmwall network allow/block rules.
 import json
 import socket
 import ssl
+import struct
 import subprocess
 import threading
 import time
@@ -542,6 +543,81 @@ class MitmwallNetworkTests(unittest.TestCase):
                 ]
                 self.assertTrue(rules, "OUTPUT has no rules")
                 self.assertEqual(rules[0], "-A OUTPUT -j MITMWALL_OUTPUT")
+
+    def test_only_ipv6_filter_allows_control_protocol(self) -> None:
+        """
+        Verify the installed ICMPv6 allowance precedes DROP and has no IPv4 peer.
+        """
+
+        rules_by_command: dict[str, list[str]] = {}
+        for table_command in ("iptables", "ip6tables"):
+            result = subprocess.run(
+                [
+                    "sudo",
+                    "-n",
+                    table_command,
+                    "-w",
+                    "10",
+                    "-t",
+                    "filter",
+                    "-S",
+                    "MITMWALL_OUTPUT",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rules_by_command[table_command] = result.stdout.splitlines()
+
+        icmpv6_rule = "-A MITMWALL_OUTPUT -p ipv6-icmp -j ACCEPT"
+        drop_rule = "-A MITMWALL_OUTPUT -j DROP"
+        ipv6_rules = rules_by_command["ip6tables"]
+        self.assertEqual(ipv6_rules.count(icmpv6_rule), 1)
+        self.assertLess(ipv6_rules.index(icmpv6_rule), ipv6_rules.index(drop_rule))
+
+        ipv4_rules = rules_by_command["iptables"]
+        self.assertNotIn("-A MITMWALL_OUTPUT -p icmp -j ACCEPT", ipv4_rules)
+        self.assertNotIn("-A MITMWALL_OUTPUT -p tcp -j ACCEPT", ipv4_rules)
+        self.assertNotIn("-A MITMWALL_OUTPUT -p udp -j ACCEPT", ipv4_rules)
+
+    def test_unprivileged_ipv6_echo_on_loopback(self) -> None:
+        """
+        Verify live ICMPv6 passes without depending on an external IPv6 network.
+        """
+
+        if not socket.has_ipv6:
+            self.skipTest("Python reports no IPv6 support")
+
+        try:
+            sock = socket.socket(
+                socket.AF_INET6, socket.SOCK_DGRAM, socket.IPPROTO_ICMPV6
+            )
+        except OSError as error:
+            self.skipTest(f"unprivileged IPv6 ping sockets are unavailable: {error}")
+
+        sequence = 1
+        payload = b"mitmwall-ipv6-control-plane"
+        request = struct.pack("!BBHHH", 128, 0, 0, 0, sequence) + payload
+        with sock:
+            sock.settimeout(CONNECT_TIMEOUT_SECONDS)
+            try:
+                sent = sock.sendto(request, ("::1", 0))
+            except OSError as error:
+                self.skipTest(f"IPv6 loopback is unavailable: {error}")
+            self.assertEqual(sent, len(request))
+            try:
+                response = sock.recv(4096)
+            except TimeoutError:
+                self.fail("ICMPv6 echo reply was blocked or timed out")
+
+        self.assertGreaterEqual(len(response), 8)
+        message_type, code, _checksum, _identifier, response_sequence = cast(
+            tuple[int, int, int, int, int],
+            struct.unpack("!BBHHH", response[:8]),
+        )
+        self.assertEqual((message_type, code), (129, 0))
+        self.assertEqual(response_sequence, sequence)
+        self.assertEqual(response[8:], payload)
 
     def test_custom_iptables_rule_allows_direct_tcp(self) -> None:
         """

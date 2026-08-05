@@ -55,6 +55,9 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
     direction, preserving responses for inbound sessions such as SSH without
     preserving ordinary users' outbound connections across service startup or
     restart
+  - accept ICMPv6 so Linux can perform Neighbor Discovery, router discovery,
+    address configuration, error reporting, and Path MTU Discovery; this applies
+    only to IPv6 and does not permit ordinary TCP or UDP egress
   - drop other outbound traffic so applications cannot bypass the proxies
 - The mitmproxy addon in ` src/addon` loads TOML files
   from `/etc/mitmwall/rules.d` and:
@@ -294,6 +297,14 @@ create raw sockets that would bypass iptables. Only root and processes explicitl
 granted this capability (for example via `setcap`) can craft packets that skip
 the firewall rules. This makes raw socket-based circumvention impractical for
 the threat model mitmwall targets.
+
+The IPv6 filter therefore accepts all ICMPv6 rather than maintaining a fixed
+message-type list. ICMPv6 is IPv6 control-plane traffic, and RFC 4890's required
+and recommended messages cover more than Neighbor Discovery and can evolve with
+the Linux IPv6 stack. A type list is more likely to break IPv6 configuration or
+Path MTU handling. Unprivileged Linux ping sockets are limited to echo requests,
+so this broader kernel-facing allowance does not let regular processes construct
+arbitrary ICMPv6 packets or weaken the TCP/UDP egress policy.
 
 ### Bottomline
 

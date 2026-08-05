@@ -764,6 +764,84 @@ class OutputFilterConntrackTests(unittest.TestCase):
         )
 
 
+class OutputFilterIPv6ControlPlaneTests(unittest.TestCase):
+    """
+    Verify that only IPv6 receives the control-plane protocol allowance.
+    """
+
+    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.hook.add_ntp_filter_rules")
+    @patch("src.systemd.hook.subprocess.run")
+    def test_allows_icmpv6_before_drop(
+        self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
+    ) -> None:
+        """
+        The IPv6 chain accepts the complete ICMPv6 protocol before failing closed.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+        hook.add_output_filter("ip6tables")
+
+        commands = [
+            cast(list[str], invocation.args[0])
+            for invocation in mock_run.call_args_list
+        ]
+        icmpv6_rule = [
+            "ip6tables",
+            "-w",
+            "10",
+            "-t",
+            "filter",
+            "-A",
+            hook.CHAIN,
+            "-p",
+            "ipv6-icmp",
+            "-j",
+            "ACCEPT",
+        ]
+        drop_rule = [
+            "ip6tables",
+            "-w",
+            "10",
+            "-t",
+            "filter",
+            "-A",
+            hook.CHAIN,
+            "-j",
+            "DROP",
+        ]
+        self.assertEqual(commands.count(icmpv6_rule), 1)
+        self.assertLess(commands.index(icmpv6_rule), commands.index(drop_rule))
+
+    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.hook.add_ntp_filter_rules")
+    @patch("src.systemd.hook.subprocess.run")
+    def test_ipv4_has_no_corresponding_protocol_allowance(
+        self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
+    ) -> None:
+        """
+        The IPv4 chain retains its policy without a protocol-wide allowance.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+        hook.add_output_filter("iptables")
+
+        commands = [
+            cast(list[str], invocation.args[0])
+            for invocation in mock_run.call_args_list
+        ]
+        appended_rules = [
+            command[7:]
+            for command in commands
+            if command[5:7] == ["-A", hook.CHAIN]
+        ]
+        self.assertNotIn(["-p", "icmp", "-j", "ACCEPT"], appended_rules)
+        self.assertNotIn(["-p", "tcp", "-j", "ACCEPT"], appended_rules)
+        self.assertNotIn(["-p", "udp", "-j", "ACCEPT"], appended_rules)
+
+
 class AddRuleTests(unittest.TestCase):
     """
     Verify add_rule inserts custom rules into an iptables chain.
