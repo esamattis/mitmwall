@@ -8,6 +8,7 @@ ExecStopPost (stop).
 """
 
 import ipaddress
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,9 @@ DNS_PORT = 58053
 WEB_PORT = 58081
 CHAIN = "MITMWALL_OUTPUT"
 COMMENT = "mitmwall-custom"
+XTABLES_WAIT_SECONDS = 10
+RULE_ABSENT_ERROR = "Bad rule (does a matching rule exist in that chain?)."
+CHAIN_ABSENT_ERROR = "No chain/target/match by that name."
 # https://docs.mitmproxy.org/stable/howto/transparent/
 #
 # Policy installed by the "start" action:
@@ -41,6 +45,50 @@ COMMENT = "mitmwall-custom"
 # - Drop all other new outbound traffic so applications cannot bypass the proxies.
 
 
+def run_xtables(
+    table_cmd: str, args: list[str], *, check: bool = True
+) -> subprocess.CompletedProcess[str]:
+    """
+    Run an iptables-family command after waiting for the shared xtables lock.
+
+    A bounded wait prevents transient concurrent firewall updates from failing
+    immediately while still making a persistent lock problem visible.
+    """
+
+    command = [table_cmd, "-w", str(XTABLES_WAIT_SECONDS), *args]
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=check,
+        env={**os.environ, "LC_ALL": "C"},
+    )
+
+
+def probe_xtables(
+    table_cmd: str, args: list[str], expected_absence: str
+) -> subprocess.CompletedProcess[str] | None:
+    """
+    Run an xtables existence/list probe and distinguish absence from failure.
+
+    Only exit status 1 with the diagnostic specific to the requested absent
+    state is idempotent. Lock timeouts, permission failures, unsupported
+    features, and malformed commands are raised to the caller.
+    """
+
+    result = run_xtables(table_cmd, args, check=False)
+    if result.returncode == 0:
+        return result
+    if result.returncode == 1 and result.stderr.rstrip().endswith(expected_absence):
+        return None
+    raise subprocess.CalledProcessError(
+        result.returncode,
+        [table_cmd, "-w", str(XTABLES_WAIT_SECONDS), *args],
+        output=result.stdout,
+        stderr=result.stderr,
+    )
+
+
 def place_rule_first(
     table_cmd: str, table: str, chain: str, rule_args: list[str]
 ) -> None:
@@ -52,22 +100,19 @@ def place_rule_first(
     """
 
     while True:
-        check = subprocess.run(
-            [table_cmd, "-t", table, "-C", chain, *rule_args],
-            capture_output=True,
+        existing = probe_xtables(
+            table_cmd,
+            ["-t", table, "-C", chain, *rule_args],
+            RULE_ABSENT_ERROR,
         )
-        if check.returncode != 0:
+        if existing is None:
             break
-        _ = subprocess.run(
-            [table_cmd, "-t", table, "-D", chain, *rule_args],
-            capture_output=True,
-            check=True,
+        _ = run_xtables(
+            table_cmd, ["-t", table, "-D", chain, *rule_args]
         )
 
-    _ = subprocess.run(
-        [table_cmd, "-t", table, "-I", chain, "1", *rule_args],
-        capture_output=True,
-        check=True,
+    _ = run_xtables(
+        table_cmd, ["-t", table, "-I", chain, "1", *rule_args]
     )
 
 
@@ -166,9 +211,9 @@ def remove_redirect_rule(table_cmd: str, dport: int) -> None:
     """
 
     while True:
-        check = subprocess.run(
+        existing = probe_xtables(
+            table_cmd,
             [
-                table_cmd,
                 "-t",
                 "nat",
                 "-C",
@@ -200,13 +245,13 @@ def remove_redirect_rule(table_cmd: str, dport: int) -> None:
                 "--to-port",
                 str(PROXY_PORT),
             ],
-            capture_output=True,
+            RULE_ABSENT_ERROR,
         )
-        if check.returncode != 0:
+        if existing is None:
             break
-        _ = subprocess.run(
+        _ = run_xtables(
+            table_cmd,
             [
-                table_cmd,
                 "-t",
                 "nat",
                 "-D",
@@ -238,8 +283,6 @@ def remove_redirect_rule(table_cmd: str, dport: int) -> None:
                 "--to-port",
                 str(PROXY_PORT),
             ],
-            capture_output=True,
-            check=True,
         )
 
 
@@ -295,9 +338,9 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
     """
 
     while True:
-        check = subprocess.run(
+        existing = probe_xtables(
+            table_cmd,
             [
-                table_cmd,
                 "-t",
                 "nat",
                 "-C",
@@ -331,13 +374,13 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
                 "--to-port",
                 str(DNS_PORT),
             ],
-            capture_output=True,
+            RULE_ABSENT_ERROR,
         )
-        if check.returncode != 0:
+        if existing is None:
             break
-        _ = subprocess.run(
+        _ = run_xtables(
+            table_cmd,
             [
-                table_cmd,
                 "-t",
                 "nat",
                 "-D",
@@ -371,8 +414,6 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
                 "--to-port",
                 str(DNS_PORT),
             ],
-            capture_output=True,
-            check=True,
         )
 
 
@@ -412,16 +453,15 @@ def remove_legacy_rule_copies(table_cmd: str, rule_args: list[str]) -> None:
     """
 
     while True:
-        check = subprocess.run(
-            [table_cmd, "-t", "nat", "-C", "OUTPUT", *rule_args],
-            capture_output=True,
+        existing = probe_xtables(
+            table_cmd,
+            ["-t", "nat", "-C", "OUTPUT", *rule_args],
+            RULE_ABSENT_ERROR,
         )
-        if check.returncode != 0:
+        if existing is None:
             break
-        _ = subprocess.run(
-            [table_cmd, "-t", "nat", "-D", "OUTPUT", *rule_args],
-            capture_output=True,
-            check=True,
+        _ = run_xtables(
+            table_cmd, ["-t", "nat", "-D", "OUTPUT", *rule_args]
         )
 
 
@@ -486,9 +526,9 @@ def add_ntp_filter_rules(table_cmd: str) -> None:
             continue
         ntp_uid = result.stdout.strip()
         # Allow NTP synchronization traffic.
-        _ = subprocess.run(
+        _ = run_xtables(
+            table_cmd,
             [
-                table_cmd,
                 "-t",
                 "filter",
                 "-A",
@@ -504,14 +544,12 @@ def add_ntp_filter_rules(table_cmd: str) -> None:
                 "-j",
                 "ACCEPT",
             ],
-            capture_output=True,
-            check=True,
         )
         # Allow direct DNS queries (bypassed from the proxy by
         # add_ntp_dns_bypass_rule) to actually leave the host.
-        _ = subprocess.run(
+        _ = run_xtables(
+            table_cmd,
             [
-                table_cmd,
                 "-t",
                 "filter",
                 "-A",
@@ -527,12 +565,10 @@ def add_ntp_filter_rules(table_cmd: str) -> None:
                 "-j",
                 "ACCEPT",
             ],
-            capture_output=True,
-            check=True,
         )
-        _ = subprocess.run(
+        _ = run_xtables(
+            table_cmd,
             [
-                table_cmd,
                 "-t",
                 "filter",
                 "-A",
@@ -548,8 +584,6 @@ def add_ntp_filter_rules(table_cmd: str) -> None:
                 "-j",
                 "ACCEPT",
             ],
-            capture_output=True,
-            check=True,
         )
 
 
@@ -609,9 +643,9 @@ def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
             continue
         ntp_uid = result.stdout.strip()
         while True:
-            check = subprocess.run(
+            existing = probe_xtables(
+                table_cmd,
                 [
-                    table_cmd,
                     "-t",
                     "nat",
                     "-C",
@@ -627,13 +661,13 @@ def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
                     "-j",
                     "ACCEPT",
                 ],
-                capture_output=True,
+                RULE_ABSENT_ERROR,
             )
-            if check.returncode != 0:
+            if existing is None:
                 break
-            _ = subprocess.run(
+            _ = run_xtables(
+                table_cmd,
                 [
-                    table_cmd,
                     "-t",
                     "nat",
                     "-D",
@@ -649,8 +683,6 @@ def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
                     "-j",
                     "ACCEPT",
                 ],
-                capture_output=True,
-                check=True,
             )
 
 
@@ -664,33 +696,30 @@ def add_output_filter(table_cmd: str) -> None:
     and every other outbound packet is blocked.
     """
 
-    check = subprocess.run(
-        [table_cmd, "-t", "filter", "-L", CHAIN],
-        capture_output=True,
+    existing_chain = probe_xtables(
+        table_cmd,
+        ["-t", "filter", "-L", CHAIN],
+        CHAIN_ABSENT_ERROR,
     )
-    if check.returncode != 0:
-        _ = subprocess.run(
-            [table_cmd, "-t", "filter", "-N", CHAIN],
-            capture_output=True,
-            check=True,
+    if existing_chain is None:
+        _ = run_xtables(
+            table_cmd, ["-t", "filter", "-N", CHAIN]
         )
 
     # Rebuild the managed chain on every service start.  Flushing only this
     # project-specific chain keeps the rules deterministic without disturbing
     # unrelated administrator-managed firewall rules in other chains.
-    _ = subprocess.run(
-        [table_cmd, "-t", "filter", "-F", CHAIN],
-        capture_output=True,
-        check=True,
+    _ = run_xtables(
+        table_cmd, ["-t", "filter", "-F", CHAIN]
     )
 
     # For inbound sessions, locally generated responses flow in conntrack's REPLY
     # direction.  Restricting this exception to REPLY preserves sessions such as
     # SSH without accepting ORIGINAL-direction packets from outbound connections
     # that ordinary users established before this chain was installed or rebuilt.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -704,15 +733,13 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # Root needs unrestricted outbound access for host administration and
     # troubleshooting, matching the bypass behavior of the proxy user.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -724,16 +751,14 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # APT intentionally drops its download workers from root to _apt.  Preserve
     # that sandbox while retaining the unrestricted package-management behavior
     # expected when an administrator invokes APT as root.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -745,16 +770,14 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # mitmproxy runs as the dedicated mitmwall user.  It needs unrestricted
     # outbound access so, after accepting a client flow, it can create the real
     # upstream connection to the destination server.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -766,16 +789,14 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # systemd-resolved runs as systemd-resolve on Ubuntu.  Let only that resolver
     # process make upstream DNS queries; regular applications are redirected to
     # mitmproxy's local DNS listener before this filter runs.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -787,8 +808,6 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # Time synchronization clients run as unprivileged service users.  The filter
@@ -801,18 +820,17 @@ def add_output_filter(table_cmd: str) -> None:
     # Permit connections to services on this machine.  This keeps localhost and
     # other loopback traffic working while the default policy below still blocks
     # outbound bypass attempts to remote hosts.
-    _ = subprocess.run(
-        [table_cmd, "-t", "filter", "-A", CHAIN, "-o", "lo", "-j", "ACCEPT"],
-        capture_output=True,
-        check=True,
+    _ = run_xtables(
+        table_cmd,
+        ["-t", "filter", "-A", CHAIN, "-o", "lo", "-j", "ACCEPT"],
     )
 
     # Permit local clients to reach the transparent mitmproxy listener.  The
     # destination must be LOCAL so this does not become a general allow rule for
     # remote hosts that happen to use the same TCP port.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -828,15 +846,13 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # Permit DNS queries to mitmproxy's DNS mode listener.  Direct queries to
     # remote DNS servers are redirected here by NAT before this filter runs.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -852,12 +868,10 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -873,16 +887,14 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # Permit access to the mitmweb UI only on this machine.  As above, requiring a
     # LOCAL destination avoids allowing arbitrary outbound connections to remote
     # services listening on the web UI port number.
-    _ = subprocess.run(
+    _ = run_xtables(
+        table_cmd,
         [
-            table_cmd,
             "-t",
             "filter",
             "-A",
@@ -898,16 +910,12 @@ def add_output_filter(table_cmd: str) -> None:
             "-j",
             "ACCEPT",
         ],
-        capture_output=True,
-        check=True,
     )
 
     # Fail closed: anything not explicitly allowed above is a new outbound
     # connection attempt that would bypass the transparent proxy, so drop it.
-    _ = subprocess.run(
-        [table_cmd, "-t", "filter", "-A", CHAIN, "-j", "DROP"],
-        capture_output=True,
-        check=True,
+    _ = run_xtables(
+        table_cmd, ["-t", "filter", "-A", CHAIN, "-j", "DROP"]
     )
 
     # Reattach at the head on every start.  An earlier terminal rule in OUTPUT
@@ -925,34 +933,28 @@ def remove_output_filter(table_cmd: str) -> None:
     and blocks all other outbound traffic.
     """
 
+    existing_chain = probe_xtables(
+        table_cmd,
+        ["-t", "filter", "-L", CHAIN],
+        CHAIN_ABSENT_ERROR,
+    )
+    if existing_chain is None:
+        return
+
     while True:
-        check = subprocess.run(
-            [table_cmd, "-t", "filter", "-C", "OUTPUT", "-j", CHAIN],
-            capture_output=True,
+        existing_jump = probe_xtables(
+            table_cmd,
+            ["-t", "filter", "-C", "OUTPUT", "-j", CHAIN],
+            RULE_ABSENT_ERROR,
         )
-        if check.returncode != 0:
+        if existing_jump is None:
             break
-        _ = subprocess.run(
-            [table_cmd, "-t", "filter", "-D", "OUTPUT", "-j", CHAIN],
-            capture_output=True,
-            check=True,
+        _ = run_xtables(
+            table_cmd, ["-t", "filter", "-D", "OUTPUT", "-j", CHAIN]
         )
 
-    check = subprocess.run(
-        [table_cmd, "-t", "filter", "-L", CHAIN],
-        capture_output=True,
-    )
-    if check.returncode == 0:
-        _ = subprocess.run(
-            [table_cmd, "-t", "filter", "-F", CHAIN],
-            capture_output=True,
-            check=True,
-        )
-        _ = subprocess.run(
-            [table_cmd, "-t", "filter", "-X", CHAIN],
-            capture_output=True,
-            check=True,
-        )
+    _ = run_xtables(table_cmd, ["-t", "filter", "-F", CHAIN])
+    _ = run_xtables(table_cmd, ["-t", "filter", "-X", CHAIN])
 
 
 def ensure_web_rules_file() -> None:
@@ -1119,7 +1121,8 @@ def add_rule(table_cmd: str, chain: str, network: str, port: int) -> None:
     Insert a single custom ACCEPT rule into the given chain before the DROP rule.
 
     The rule is tagged with a comment so it can be identified and removed later.
-    If the chain does not exist or has no DROP rule, the rule is appended.
+    A missing chain is left absent; if the chain has no DROP rule, the custom
+    rule is appended.
     """
 
     rule_args = [
@@ -1129,8 +1132,8 @@ def add_rule(table_cmd: str, chain: str, network: str, port: int) -> None:
         chain,
         "--line-numbers",
     ]
-    result = subprocess.run([table_cmd, *rule_args], capture_output=True, text=True)
-    if result.returncode != 0:
+    result = probe_xtables(table_cmd, rule_args, CHAIN_ABSENT_ERROR)
+    if result is None:
         return
 
     drop_line = find_drop_line_number(result)
@@ -1151,16 +1154,13 @@ def add_rule(table_cmd: str, chain: str, network: str, port: int) -> None:
     ]
 
     if drop_line is not None:
-        _ = subprocess.run(
-            [table_cmd, "-t", "filter", "-I", chain, drop_line, *custom_rule],
-            capture_output=True,
-            check=True,
+        _ = run_xtables(
+            table_cmd,
+            ["-t", "filter", "-I", chain, drop_line, *custom_rule],
         )
     else:
-        _ = subprocess.run(
-            [table_cmd, "-t", "filter", "-A", chain, *custom_rule],
-            capture_output=True,
-            check=True,
+        _ = run_xtables(
+            table_cmd, ["-t", "filter", "-A", chain, *custom_rule]
         )
 
 
@@ -1222,12 +1222,12 @@ def remove_comment_rules(table_cmd: str, table: str, chain: str) -> None:
     """
 
     while True:
-        result = subprocess.run(
-            [table_cmd, "-t", table, "-L", chain, "--line-numbers"],
-            capture_output=True,
-            text=True,
+        result = probe_xtables(
+            table_cmd,
+            ["-t", table, "-L", chain, "--line-numbers"],
+            CHAIN_ABSENT_ERROR,
         )
-        if result.returncode != 0:
+        if result is None:
             break
 
         removed = False
@@ -1235,10 +1235,8 @@ def remove_comment_rules(table_cmd: str, table: str, chain: str) -> None:
             if COMMENT in line:
                 parts = line.split()
                 if parts and parts[0].isdigit():
-                    _ = subprocess.run(
-                        [table_cmd, "-t", table, "-D", chain, parts[0]],
-                        capture_output=True,
-                        check=True,
+                    _ = run_xtables(
+                        table_cmd, ["-t", table, "-D", chain, parts[0]]
                     )
                     removed = True
                     break

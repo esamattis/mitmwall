@@ -153,6 +153,110 @@ num  target     prot opt source               destination
         self.assertIsNone(hook.find_drop_line_number(result))
 
 
+class XtablesCommandTests(unittest.TestCase):
+    """
+    Verify centralized xtables locking and probe error classification.
+    """
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_ipv4_and_ipv6_commands_wait_for_xtables_lock(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        Every iptables-family invocation includes the bounded lock wait flags.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+
+        for table_cmd in ("iptables", "ip6tables"):
+            _ = hook.run_xtables(table_cmd, ["-t", "filter", "-L", "OUTPUT"])
+
+        commands = [invocation.args[0] for invocation in mock_run.call_args_list]
+        self.assertEqual(
+            commands,
+            [
+                ["iptables", "-w", "10", "-t", "filter", "-L", "OUTPUT"],
+                ["ip6tables", "-w", "10", "-t", "filter", "-L", "OUTPUT"],
+            ],
+        )
+        self.assertTrue(
+            all(
+                invocation.kwargs["env"]["LC_ALL"] == "C"
+                for invocation in mock_run.call_args_list
+            )
+        )
+
+    @patch("src.systemd.hook.run_xtables")
+    def test_expected_rule_and_chain_absence_is_idempotent(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        Canonical missing-rule and missing-chain probe results return None.
+        """
+
+        for absence_error in (hook.RULE_ABSENT_ERROR, hook.CHAIN_ABSENT_ERROR):
+            with self.subTest(absence_error=absence_error):
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=["iptables"],
+                    returncode=1,
+                    stdout="",
+                    stderr=f"iptables: {absence_error}\n",
+                )
+
+                self.assertIsNone(
+                    hook.probe_xtables("iptables", ["probe"], absence_error)
+                )
+
+    @patch("src.systemd.hook.run_xtables")
+    def test_probe_raises_unexpected_operational_errors(
+        self, mock_run: MagicMock
+    ) -> None:
+        """
+        Lock, permission, unsupported-feature, and syntax errors remain visible.
+        """
+
+        errors = (
+            (4, "Another app is currently holding the xtables lock"),
+            (4, "Permission denied (you must be root)"),
+            (3, "can't initialize iptables table `security': Table does not exist"),
+            (1, "Couldn't load match `owner':No such file or directory"),
+            (2, "unknown option --malformed"),
+        )
+        for returncode, stderr in errors:
+            with self.subTest(stderr=stderr):
+                mock_run.return_value = subprocess.CompletedProcess(
+                    args=["iptables"],
+                    returncode=returncode,
+                    stdout="",
+                    stderr=stderr,
+                )
+
+                with self.assertRaises(subprocess.CalledProcessError):
+                    _ = hook.probe_xtables(
+                        "iptables",
+                        ["-t", "filter", "-C", "OUTPUT"],
+                        hook.RULE_ABSENT_ERROR,
+                    )
+
+    @patch("src.systemd.hook.subprocess.run")
+    def test_cleanup_probe_error_propagates(self, mock_run: MagicMock) -> None:
+        """
+        Cleanup raises instead of reporting success after an operational error.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["iptables"],
+            returncode=4,
+            stdout="",
+            stderr="Another app is currently holding the xtables lock",
+        )
+
+        with self.assertRaises(subprocess.CalledProcessError):
+            hook.remove_redirect_rule("iptables", 443)
+
+
 class PlaceRuleFirstTests(unittest.TestCase):
     """
     Verify managed entry points are repaired at the head of built-in chains.
@@ -173,7 +277,9 @@ class PlaceRuleFirstTests(unittest.TestCase):
                 mock_run.side_effect = [
                     subprocess.CompletedProcess(args=[], returncode=0),
                     subprocess.CompletedProcess(args=[], returncode=0),
-                    subprocess.CompletedProcess(args=[], returncode=1),
+                    subprocess.CompletedProcess(
+                        args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+                    ),
                     subprocess.CompletedProcess(args=[], returncode=0),
                 ]
 
@@ -182,11 +288,40 @@ class PlaceRuleFirstTests(unittest.TestCase):
                 self.assertEqual(
                     [item.args[0] for item in mock_run.call_args_list],
                     [
-                        [table_cmd, "-t", "filter", "-C", "OUTPUT", *rule],
-                        [table_cmd, "-t", "filter", "-D", "OUTPUT", *rule],
-                        [table_cmd, "-t", "filter", "-C", "OUTPUT", *rule],
                         [
                             table_cmd,
+                            "-w",
+                            "10",
+                            "-t",
+                            "filter",
+                            "-C",
+                            "OUTPUT",
+                            *rule,
+                        ],
+                        [
+                            table_cmd,
+                            "-w",
+                            "10",
+                            "-t",
+                            "filter",
+                            "-D",
+                            "OUTPUT",
+                            *rule,
+                        ],
+                        [
+                            table_cmd,
+                            "-w",
+                            "10",
+                            "-t",
+                            "filter",
+                            "-C",
+                            "OUTPUT",
+                            *rule,
+                        ],
+                        [
+                            table_cmd,
+                            "-w",
+                            "10",
                             "-t",
                             "filter",
                             "-I",
@@ -210,16 +345,20 @@ class PlaceRuleFirstTests(unittest.TestCase):
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(args=[], returncode=0),
-            subprocess.CompletedProcess(args=[], returncode=1),
+            subprocess.CompletedProcess(
+                args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+            ),
             subprocess.CompletedProcess(args=[], returncode=0),
         ]
 
         hook.place_rule_first("iptables", "nat", "OUTPUT", ["-j", "REDIRECT"])
 
-        commands = [item.args[0] for item in mock_run.call_args_list]
+        commands = [
+            cast(list[str], item.args[0]) for item in mock_run.call_args_list
+        ]
         self.assertEqual(sum("-D" in command for command in commands), 2)
         self.assertEqual(sum("-I" in command for command in commands), 1)
-        self.assertEqual(commands[-1][5:7], ["1", "-j"])
+        self.assertEqual(commands[-1][7:9], ["1", "-j"])
 
 
 class LegacyRedirectCleanupTests(unittest.TestCase):
@@ -296,7 +435,9 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(args=[], returncode=0),
-            subprocess.CompletedProcess(args=[], returncode=1),
+            subprocess.CompletedProcess(
+                args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+            ),
         ]
         rule = hook.legacy_redirect_rule_args(
             "tcp", 443, hook.PROXY_PORT, ("0", hook.USER), exclude_loopback=True
@@ -305,8 +446,26 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
         hook.remove_legacy_rule_copies("iptables", rule)
 
         commands = [invocation.args[0] for invocation in mock_run.call_args_list]
-        delete_command = ["iptables", "-t", "nat", "-D", "OUTPUT", *rule]
-        check_command = ["iptables", "-t", "nat", "-C", "OUTPUT", *rule]
+        delete_command = [
+            "iptables",
+            "-w",
+            "10",
+            "-t",
+            "nat",
+            "-D",
+            "OUTPUT",
+            *rule,
+        ]
+        check_command = [
+            "iptables",
+            "-w",
+            "10",
+            "-t",
+            "nat",
+            "-C",
+            "OUTPUT",
+            *rule,
+        ]
         self.assertEqual(commands.count(delete_command), 2)
         self.assertEqual(commands[-1], check_command)
 
@@ -333,6 +492,8 @@ class OutputFilterConntrackTests(unittest.TestCase):
         commands = [call[0][0] for call in mock_run.call_args_list]
         self.assertEqual(commands[2], [
             "iptables",
+            "-w",
+            "10",
             "-t",
             "filter",
             "-A",
@@ -349,6 +510,8 @@ class OutputFilterConntrackTests(unittest.TestCase):
         self.assertNotIn(
             [
                 "iptables",
+                "-w",
+                "10",
                 "-t",
                 "filter",
                 "-A",
@@ -390,6 +553,8 @@ class AddRuleTests(unittest.TestCase):
         calls = mock_run.call_args_list
         self.assertEqual(calls[-1][0][0], [
             "iptables",
+            "-w",
+            "10",
             "-t",
             "filter",
             "-I",
@@ -427,6 +592,8 @@ class AddRuleTests(unittest.TestCase):
         calls = mock_run.call_args_list
         self.assertEqual(calls[-1][0][0], [
             "iptables",
+            "-w",
+            "10",
             "-t",
             "filter",
             "-A",
@@ -472,6 +639,8 @@ class RemoveCustomRulesTests(unittest.TestCase):
         delete_call = mock_run.call_args_list[1]
         self.assertEqual(delete_call[0][0], [
             "iptables",
+            "-w",
+            "10",
             "-t",
             "filter",
             "-D",
@@ -488,7 +657,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[],
             returncode=1,
-            stderr="No chain/target/match by that name",
+            stderr=hook.CHAIN_ABSENT_ERROR,
         )
 
         hook.remove_custom_rules_from_chain("iptables", "MITMWALL_OUTPUT")
@@ -562,6 +731,7 @@ class ManagedNatOrderingTests(unittest.TestCase):
 
         manager = MagicMock()
         with (
+            patch("src.systemd.hook.clear_legacy_redirect_rules"),
             patch("src.systemd.hook.enable_forwarding") as mock_forwarding,
             patch("src.systemd.hook.add_dns_redirect_rule") as mock_dns,
             patch("src.systemd.hook.add_redirect_rule") as mock_web,
@@ -612,7 +782,9 @@ class AptSandboxBypassTests(unittest.TestCase):
         HTTP traffic owned by _apt is not redirected into the proxy.
         """
 
-        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1)
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+        )
 
         hook.add_redirect_rule("iptables", 80)
 
@@ -629,7 +801,9 @@ class AptSandboxBypassTests(unittest.TestCase):
         DNS traffic owned by _apt is not redirected into the DNS proxy.
         """
 
-        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=1)
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+        )
 
         hook.add_dns_redirect_rule("iptables", "udp")
 
@@ -658,6 +832,8 @@ class AptSandboxBypassTests(unittest.TestCase):
         self.assertIn(
             [
                 "iptables",
+                "-w",
+                "10",
                 "-t",
                 "filter",
                 "-A",
