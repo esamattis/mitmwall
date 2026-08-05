@@ -60,11 +60,11 @@ import base64
 from dataclasses import dataclass
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import stat
 import subprocess
-import sys
 import tempfile
 import tomllib
 from typing import Literal, cast
@@ -72,6 +72,7 @@ from typing import Literal, cast
 from src.addon.constants import ADDON_CONFIG_FILE, DEFAULT_MANAGE_RESOLV_CONF
 from src.utils.toml_helpers import is_toml_table
 
+LOGGER = logging.getLogger("mitmwall.resolv_conf")
 RESOLV_CONF = Path("/etc/resolv.conf")
 SYSTEMD_RESOLVED_STUB = Path("/run/systemd/resolve/stub-resolv.conf")
 RESOLVER_STATE_DIR = Path("/var/lib/mitmwall")
@@ -342,8 +343,10 @@ def configure_system_resolver(config_path: Path = ADDON_CONFIG_FILE) -> None:
     """
 
     if not resolv_conf_handling_enabled(config_path):
+        LOGGER.info("resolv.conf handling is disabled; leaving %s unchanged", RESOLV_CONF)
         return
     if not resolv_conf_uses_external_nameserver(RESOLV_CONF):
+        LOGGER.info("%s does not use an external nameserver; leaving it unchanged", RESOLV_CONF)
         return
 
     resolved = subprocess.run(
@@ -368,6 +371,7 @@ def configure_system_resolver(config_path: Path = ADDON_CONFIG_FILE) -> None:
         remove_resolver_state(previous_state_file)
     save_resolver_state()
     replace_with_symlink(RESOLV_CONF, str(SYSTEMD_RESOLVED_STUB))
+    LOGGER.info("switched %s to systemd-resolved stub %s", RESOLV_CONF, SYSTEMD_RESOLVED_STUB)
 
 
 def restore_system_resolver() -> None:
@@ -377,6 +381,7 @@ def restore_system_resolver() -> None:
 
     state_file = find_resolver_state_file()
     if state_file is None:
+        LOGGER.info("no saved resolv.conf configuration to restore")
         return
 
     try:
@@ -385,8 +390,10 @@ def restore_system_resolver() -> None:
         pass
     else:
         if not resolv_conf_is_mitmwall_stub():
-            message = f"{RESOLV_CONF} changed while mitmwall was running; keeping current configuration"
-            print(message, file=sys.stderr)
+            LOGGER.info(
+                "%s changed while mitmwall was running; keeping current configuration",
+                RESOLV_CONF,
+            )
             remove_resolver_state(state_file)
             return
 
@@ -400,3 +407,4 @@ def restore_system_resolver() -> None:
         os.chown(RESOLV_CONF, state.uid, state.gid, follow_symlinks=False)
 
     remove_resolver_state(state_file)
+    LOGGER.info("restored %s from saved resolver configuration", RESOLV_CONF)

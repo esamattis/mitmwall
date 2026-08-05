@@ -1413,6 +1413,7 @@ class SystemResolverTests(unittest.TestCase):
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
+                self.assertLogs(resolver.LOGGER, level="INFO") as logs,
             ):
                 resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
                 self.assertTrue(resolv_conf.is_symlink())
@@ -1422,6 +1423,8 @@ class SystemResolverTests(unittest.TestCase):
                 resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
                 resolver.restore_system_resolver()
 
+            self.assertTrue(any("switched" in message for message in logs.output))
+            self.assertTrue(any("restored" in message for message in logs.output))
             self.assertFalse(resolv_conf.is_symlink())
             self.assertEqual(resolv_conf.read_bytes(), original)
             self.assertEqual(resolv_conf.stat().st_mode & 0o777, 0o640)
@@ -1525,7 +1528,7 @@ class SystemResolverTests(unittest.TestCase):
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
-                patch("sys.stderr"),
+                self.assertLogs(resolver.LOGGER, level="INFO") as logs,
             ):
                 resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
                 resolv_conf.unlink()
@@ -1533,6 +1536,9 @@ class SystemResolverTests(unittest.TestCase):
                 _ = resolv_conf.write_text(updated, encoding="utf-8")
                 resolver.restore_system_resolver()
 
+            self.assertTrue(
+                any("keeping current configuration" in message for message in logs.output)
+            )
             self.assertEqual(resolv_conf.read_text("utf-8"), updated)
             self.assertFalse(state_file.exists())
 
@@ -1595,9 +1601,13 @@ class SystemResolverTests(unittest.TestCase):
             original = "nameserver 192.0.2.53\n"
             _ = system_resolv_conf.write_text(original, encoding="utf-8")
 
-            with patch("src.systemd.resolv_conf.RESOLV_CONF", system_resolv_conf):
+            with (
+                patch("src.systemd.resolv_conf.RESOLV_CONF", system_resolv_conf),
+                self.assertLogs(resolver.LOGGER, level="INFO") as logs,
+            ):
                 resolver.configure_system_resolver(config)
 
+            self.assertTrue(any("disabled" in message for message in logs.output))
             self.assertEqual(system_resolv_conf.read_text("utf-8"), original)
             mock_run.assert_not_called()
 

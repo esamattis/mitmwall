@@ -9,6 +9,7 @@ ExecStopPost (stop).
 
 import ipaddress
 import json
+import logging
 import os
 import stat
 import subprocess
@@ -1580,6 +1581,8 @@ def main() -> None:
     """
     Entry point for the mitmwall iptables hook.
     """
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
 
     if len(sys.argv) != 2:
         usage()
