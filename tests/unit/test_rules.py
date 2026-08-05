@@ -950,12 +950,6 @@ class HeaderInjectionAddonTests(unittest.TestCase):
         addon.is_allow_all_traffic = lambda: False
         addon.rules = [
             DomainRule(
-                name="domain pie.dev",
-                domain=("pie.dev",),
-                include_subdomains=False,
-                methods=("GET",),
-            ),
-            DomainRule(
                 name="domain pie.dev, pathname_pattern '/headers'",
                 domain=("pie.dev",),
                 include_subdomains=False,
@@ -979,6 +973,12 @@ class HeaderInjectionAddonTests(unittest.TestCase):
                         value="enabled",
                     ),
                 ),
+            ),
+            DomainRule(
+                name="domain pie.dev",
+                domain=("pie.dev",),
+                include_subdomains=False,
+                methods=("GET",),
             ),
         ]
 
