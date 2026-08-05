@@ -25,13 +25,10 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
 
 - systemd `mitmwall.service` starts `mitmweb` in transparent HTTP(S) proxy mode
   and DNS proxy mode.
-- When `manage_resolv_conf` is enabled, `ExecStartPre` temporarily switches an
-  `/etc/resolv.conf` containing external
+- `ExecStartPre` temporarily switches an `/etc/resolv.conf` containing external
   nameservers to systemd-resolved's loopback stub. PVE commonly writes upstream
   nameservers directly to `/etc/resolv.conf` in LXC containers, which is
-  incompatible with mitmwall's local UDP DNS REDIRECT path. This is a resolver
-  configuration compatibility workaround. The original regular file or symlink
-  is preserved for restoration.
+  incompatible with mitmwall's local UDP DNS REDIRECT path.
 - `ExecStartPre` installs `iptables`/`ip6tables` rules that:
   - move mitmwall's filter `OUTPUT` jump and managed NAT rules ahead of
     unrelated rules on every start, so an earlier terminal rule cannot bypass
@@ -182,9 +179,7 @@ sudo systemctl restart mitmwall
 Native mitmproxy settings are stored in
 `/opt/mitmwall/mitmweb/config.yaml`. The installer creates this file with a
 generated web interface password and `web_port: 58081` if it does not already
-exist. Reinstalling or upgrading mitmwall preserves existing settings. When
-upgrading a config created by an older mitmwall version, the installer adds the
-default `web_port` only if the setting is absent.
+exist. Reinstalling or upgrading mitmwall preserves existing settings.
 
 For example, to make the mitmweb interface listen on all IPv4 interfaces, add:
 
@@ -197,10 +192,6 @@ Restart mitmwall after changing the file:
 ```console
 sudo systemctl restart mitmwall
 ```
-
-Settings passed directly by `/opt/mitmwall/start.sh`, including the transparent
-proxy listener port and proxy modes, take precedence over corresponding
-settings in this file.
 
 ## Web interface
 
