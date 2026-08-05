@@ -166,6 +166,31 @@ Restart the service after changing addon configuration:
 sudo systemctl restart mitmwall
 ```
 
+## mitmproxy configuration
+
+Native mitmproxy settings are stored in
+`/opt/mitmwall/mitmweb/config.yaml`. The installer creates this file with a
+generated web interface password and `web_port: 58081` if it does not already
+exist. Reinstalling or upgrading mitmwall preserves existing settings. When
+upgrading a config created by an older mitmwall version, the installer adds the
+default `web_port` only if the setting is absent.
+
+For example, to make the mitmweb interface listen on all IPv4 interfaces, add:
+
+```yaml
+web_host: 0.0.0.0
+```
+
+Restart mitmwall after changing the file:
+
+```console
+sudo systemctl restart mitmwall
+```
+
+Settings passed directly by `/opt/mitmwall/start.sh`, including the transparent
+proxy listener port and proxy modes, take precedence over corresponding
+settings in this file.
+
 ## Web interface
 
 The `mitmweb` web interface can be used to inspect traffic, which makes it

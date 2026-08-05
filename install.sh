@@ -140,7 +140,14 @@ if [ ! -f "$mitmweb_config_file" ]; then
     umask 077
     password=$(openssl rand -base64 20 | tr -d '+/=' )
     generated_web_password=$password
-    printf 'web_password: "%s"\n' "$password" >"$mitmweb_config_file"
+    cat >"$mitmweb_config_file" <<EOF
+web_password: "$password"
+web_port: 58081
+#web_host: 0.0.0.0
+EOF
+elif ! grep -q '^[[:space:]]*web_port[[:space:]]*:' "$mitmweb_config_file"; then
+    # Preserve the established mitmwall port when upgrading an older config.
+    printf 'web_port: 58081\n' >>"$mitmweb_config_file"
 fi
 
 # Lock down ownership and permissions for runtime state. The mitmweb confdir is
