@@ -648,12 +648,12 @@ def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
 
 def add_output_filter(table_cmd: str) -> None:
     """
-    Enforce the outbound allowlist.  Established/related packets are allowed so
-    replies from inbound connections (for example SSH) are not broken.  The proxy
-    user, root, and APT's sandbox user are allowed to reach the network, loopback
-    traffic is allowed so localhost services remain reachable, clients are allowed
-    to reach the local HTTP proxy, DNS proxy, and web UI on this host, and every
-    other new outbound connection is blocked.
+    Enforce the outbound allowlist.  Reply-direction established/related packets
+    are allowed so inbound connections (for example SSH) are not broken.  The
+    proxy user, root, and APT's sandbox user are allowed to reach the network,
+    loopback traffic is allowed so localhost services remain reachable, clients
+    are allowed to reach the local HTTP proxy, DNS proxy, and web UI on this host,
+    and every other outbound packet is blocked.
     """
 
     check = subprocess.run(
@@ -676,9 +676,10 @@ def add_output_filter(table_cmd: str) -> None:
         check=True,
     )
 
-    # Always allow packets that belong to connections the kernel already knows
-    # about, plus related helper traffic.  This prevents the outbound policy from
-    # breaking replies for existing/inbound sessions such as SSH.
+    # For inbound sessions, locally generated responses flow in conntrack's REPLY
+    # direction.  Restricting this exception to REPLY preserves sessions such as
+    # SSH without accepting ORIGINAL-direction packets from outbound connections
+    # that ordinary users established before this chain was installed or rebuilt.
     _ = subprocess.run(
         [
             table_cmd,
@@ -690,6 +691,8 @@ def add_output_filter(table_cmd: str) -> None:
             "conntrack",
             "--ctstate",
             "ESTABLISHED,RELATED",
+            "--ctdir",
+            "REPLY",
             "-j",
             "ACCEPT",
         ],
@@ -916,11 +919,11 @@ def add_output_filter(table_cmd: str) -> None:
 def remove_output_filter(table_cmd: str) -> None:
     """
     Remove the outbound allowlist/blocklist chain installed by the "start" action.
-    That chain allows established/related packets so inbound services such as SSH
-    keep working, allows root, APT's sandbox user, and the proxy user to reach
-    upstream hosts, allows loopback traffic, allows other users to connect to the
-    local HTTP proxy, DNS proxy, and web UI ports on this host, and blocks all other
-    new outbound traffic.
+    That chain allows reply-direction established/related packets so inbound
+    services such as SSH keep working, allows root, APT's sandbox user, and the
+    proxy user to reach upstream hosts, allows loopback traffic, allows other users
+    to connect to the local HTTP proxy, DNS proxy, and web UI ports on this host,
+    and blocks all other outbound traffic.
     """
 
     while True:

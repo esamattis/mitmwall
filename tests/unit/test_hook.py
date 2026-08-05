@@ -153,6 +153,58 @@ num  target     prot opt source               destination
         self.assertIsNone(hook.find_drop_line_number(result))
 
 
+class OutputFilterConntrackTests(unittest.TestCase):
+    """
+    Verify the OUTPUT filter's conntrack direction restriction.
+    """
+
+    @patch("src.systemd.hook.add_ntp_filter_rules")
+    @patch("src.systemd.hook.subprocess.run")
+    def test_first_accept_rule_only_allows_reply_direction(
+        self, mock_run: MagicMock, _mock_ntp: MagicMock
+    ) -> None:
+        """
+        Established outbound flows do not bypass policy after a chain rebuild.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+        hook.add_output_filter("iptables")
+
+        commands = [call[0][0] for call in mock_run.call_args_list]
+        self.assertEqual(commands[2], [
+            "iptables",
+            "-t",
+            "filter",
+            "-A",
+            hook.CHAIN,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "--ctdir",
+            "REPLY",
+            "-j",
+            "ACCEPT",
+        ])
+        self.assertNotIn(
+            [
+                "iptables",
+                "-t",
+                "filter",
+                "-A",
+                hook.CHAIN,
+                "-m",
+                "conntrack",
+                "--ctstate",
+                "ESTABLISHED,RELATED",
+                "-j",
+                "ACCEPT",
+            ],
+            commands,
+        )
+
+
 class AddRuleTests(unittest.TestCase):
     """
     Verify add_rule inserts custom rules into an iptables chain.

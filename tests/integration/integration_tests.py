@@ -6,6 +6,7 @@ Integration tests for mitmwall network allow/block rules.
 import json
 import socket
 import ssl
+import subprocess
 import threading
 import time
 import unittest
@@ -469,6 +470,45 @@ class MitmwallNetworkTests(unittest.TestCase):
         self.assert_tcp_blocked(
             "direct FTP to ftp.ubuntu-tw.org", "ftp.ubuntu-tw.org", 21
         )
+
+    def test_output_filter_only_accepts_conntrack_reply_direction(self) -> None:
+        """
+        Verify the first IPv4 and IPv6 filter rules cannot preserve outbound flows.
+        """
+
+        for table_command in ("iptables", "ip6tables"):
+            with self.subTest(table_command=table_command):
+                result = subprocess.run(
+                    [
+                        "sudo",
+                        "-n",
+                        table_command,
+                        "-t",
+                        "filter",
+                        "-S",
+                        "MITMWALL_OUTPUT",
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                rules = [
+                    line
+                    for line in result.stdout.splitlines()
+                    if line.startswith("-A MITMWALL_OUTPUT ")
+                ]
+                self.assertTrue(rules, "MITMWALL_OUTPUT has no rules")
+
+                first_rule = rules[0].split()
+                self.assertEqual(first_rule[:2], ["-A", "MITMWALL_OUTPUT"])
+                self.assertEqual(first_rule[-2:], ["-j", "ACCEPT"])
+                state_index = first_rule.index("--ctstate")
+                self.assertEqual(
+                    set(first_rule[state_index + 1].split(",")),
+                    {"ESTABLISHED", "RELATED"},
+                )
+                direction_index = first_rule.index("--ctdir")
+                self.assertEqual(first_rule[direction_index + 1], "REPLY")
 
     def test_custom_iptables_rule_allows_direct_tcp(self) -> None:
         """

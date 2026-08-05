@@ -47,7 +47,11 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
       - installed time-sync service users such as `systemd-timesync`, `_chrony`,
         or `ntp` are left able to perform NTP synchronization on UDP/123 and
         direct DNS queries on UDP/TCP 53
-  - drop other new outbound traffic so applications cannot bypass the proxies
+  - accept established/related traffic globally only in conntrack's reply
+    direction, preserving responses for inbound sessions such as SSH without
+    preserving ordinary users' outbound connections across service startup or
+    restart
+  - drop other outbound traffic so applications cannot bypass the proxies
 - The mitmproxy addon in ` src/addon` loads TOML files
   from `/etc/mitmwall/rules.d` and:
   - kills HTTP(S) flows whose host, method, and pathname do not match the
