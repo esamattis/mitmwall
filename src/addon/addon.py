@@ -6,6 +6,7 @@ import socket
 from collections.abc import Iterable, Sequence
 from importlib import import_module
 from typing import Callable, Protocol, cast
+from urllib.parse import quote
 
 from .addon_config import AddonConfig
 from .addon_logging import LOGGER, setup_logging
@@ -30,6 +31,46 @@ from .rules import (
 )
 
 DNS_RESPONSE_CODE_REFUSED = 5
+EXTERNAL_IPV4_ROUTE_TARGET = ("8.8.8.8", 80)
+
+
+def determine_external_ipv4_address() -> str | None:
+    """
+    Return the IPv4 address selected for outbound traffic, if available.
+
+    Connecting a UDP socket selects a route and local address without sending a
+    packet. The destination only needs to be externally routable.
+    """
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as route_socket:
+            route_socket.connect(EXTERNAL_IPV4_ROUTE_TARGET)
+            socket_name = cast(tuple[str, int], route_socket.getsockname())
+            address = socket_name[0]
+    except OSError:
+        return None
+
+    if address in {"", "0.0.0.0", "127.0.0.1"}:
+        return None
+    return address
+
+
+def web_ui_url(host: str, port: int, token: str) -> str:
+    """Return a mitmweb URL containing its authentication token."""
+
+    return f"http://{host}:{port}/?token={quote(token, safe='')}"
+
+
+def log_web_ui_addresses() -> None:
+    """Log localhost and, when discoverable, external mitmweb addresses."""
+
+    port = cast(int, get_option("web_port"))
+    token = cast(str, get_option("web_password"))
+    LOGGER.info(f"web UI: {web_ui_url('127.0.0.1', port, token)}")
+
+    external_address = determine_external_ipv4_address()
+    if external_address is not None:
+        LOGGER.info(f"web UI: {web_ui_url(external_address, port, token)}")
 
 
 class LoaderLike(Protocol):
@@ -333,6 +374,7 @@ class Mitmwall:
         """
 
         self.reload_rules()
+        log_web_ui_addresses()
         self._startup_done = True
 
     def configure(self, _updated: set[str]) -> None:

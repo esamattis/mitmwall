@@ -3,6 +3,7 @@ Unit tests for allow-rule parsing and request header injections.
 """
 
 import re
+import socket
 import tempfile
 import unittest
 from collections.abc import Sequence
@@ -21,7 +22,10 @@ from src.addon.addon import (
     Mitmwall,
     RequestLike,
     ResponseLike,
+    determine_external_ipv4_address,
+    log_web_ui_addresses,
     trim_mitmproxy_view_flow_history,
+    web_ui_url,
 )
 from src.addon.pathname_pattern import compile_pathname_pattern
 from src.addon.rules import (
@@ -780,9 +784,82 @@ class StartupPersistTests(unittest.TestCase):
         addon.reload_rules = lambda: None
         persist_calls: list[None] = []
         addon._persist_rules_text = lambda: persist_calls.append(None)  # pyright: ignore[reportPrivateUsage]
-        addon.running()
+        with patch("src.addon.addon.log_web_ui_addresses"):
+            addon.running()
         addon.configure({"01_mitmwall_rules_text"})
         self.assertEqual(len(persist_calls), 1)
+
+
+class WebUiLoggingTests(unittest.TestCase):
+    """Verify startup logging of authenticated mitmweb addresses."""
+
+    def test_web_ui_url_escapes_token(self) -> None:
+        """Percent-encode token characters that are unsafe in a query value."""
+
+        self.assertEqual(
+            web_ui_url("127.0.0.1", 58081, "a+b/c="),
+            "http://127.0.0.1:58081/?token=a%2Bb%2Fc%3D",
+        )
+
+    def test_external_address_uses_routed_socket_address(self) -> None:
+        """Return the source address selected by the IPv4 routing table."""
+
+        with (
+            patch.object(socket.socket, "connect") as connect,
+            patch.object(
+                socket.socket,
+                "getsockname",
+                return_value=("192.0.2.10", 45678),
+            ),
+        ):
+            address = determine_external_ipv4_address()
+
+        connect.assert_called_once_with(("8.8.8.8", 80))
+        self.assertEqual(address, "192.0.2.10")
+
+    def test_logs_localhost_and_external_addresses(self) -> None:
+        """Always log localhost before a discoverable external address."""
+
+        with (
+            patch(
+                "src.addon.addon.get_option",
+                side_effect=[58081, "secret"],
+            ),
+            patch(
+                "src.addon.addon.determine_external_ipv4_address",
+                return_value="192.0.2.10",
+            ),
+            patch("src.addon.addon.LOGGER.info") as info,
+        ):
+            log_web_ui_addresses()
+
+        self.assertEqual(
+            [recorded_call.args[0] for recorded_call in info.call_args_list],
+            [
+                "web UI: http://127.0.0.1:58081/?token=secret",
+                "web UI: http://192.0.2.10:58081/?token=secret",
+            ],
+        )
+
+    def test_logs_localhost_when_external_address_is_unavailable(self) -> None:
+        """Log only localhost when no external IPv4 address can be found."""
+
+        with (
+            patch(
+                "src.addon.addon.get_option",
+                side_effect=[58081, "secret"],
+            ),
+            patch(
+                "src.addon.addon.determine_external_ipv4_address",
+                return_value=None,
+            ),
+            patch("src.addon.addon.LOGGER.info") as info,
+        ):
+            log_web_ui_addresses()
+
+        info.assert_called_once_with(
+            "web UI: http://127.0.0.1:58081/?token=secret"
+        )
 
 
 class DNSAddonTests(unittest.TestCase):
