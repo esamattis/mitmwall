@@ -162,6 +162,25 @@ class ParseBypassUsersTests(unittest.TestCase):
         self.assertEqual(users, ("buildbot", "deployment"))
         self.assertEqual(mock_getpwnam.call_count, 3)
 
+    @patch("src.systemd.hook.pwd.getpwnam")
+    def test_policy_users_are_returned_but_proxy_user_is_implicit(
+        self, _mock_getpwnam: MagicMock
+    ) -> None:
+        """
+        Root and APT are configurable while the proxy user remains mandatory.
+        """
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
+            _ = file.write('bypass_users = ["root", "_apt", "mitmwall"]\n')
+            path = Path(file.name)
+
+        try:
+            users = hook.parse_bypass_users(path)
+        finally:
+            path.unlink()
+
+        self.assertEqual(users, ("root", "_apt"))
+
     def test_non_array_is_rejected(self) -> None:
         """
         The bypass user option must be a TOML array.
@@ -1219,7 +1238,7 @@ class AptSandboxBypassTests(unittest.TestCase):
             args=[], returncode=1, stderr=iptables.RULE_ABSENT_ERROR
         )
 
-        hook.add_redirect_rule(Iptables("iptables"), 80)
+        hook.add_redirect_rule(Iptables("iptables"), 80, (hook.APT_USER,))
 
         command = cast(list[str], mock_run.call_args_list[-1][0][0])
         apt_index = command.index(hook.APT_USER)
@@ -1238,7 +1257,9 @@ class AptSandboxBypassTests(unittest.TestCase):
             args=[], returncode=1, stderr=iptables.RULE_ABSENT_ERROR
         )
 
-        hook.add_dns_redirect_rule(Iptables("iptables"), "udp")
+        hook.add_dns_redirect_rule(
+            Iptables("iptables"), "udp", (hook.APT_USER,)
+        )
 
         command = cast(list[str], mock_run.call_args_list[-1][0][0])
         apt_index = command.index(hook.APT_USER)
@@ -1259,7 +1280,7 @@ class AptSandboxBypassTests(unittest.TestCase):
 
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
-        hook.add_output_filter(Iptables("iptables"))
+        hook.add_output_filter(Iptables("iptables"), (hook.APT_USER,))
 
         commands = [call[0][0] for call in mock_run.call_args_list]
         self.assertIn(
@@ -1286,6 +1307,23 @@ class ConfiguredUserBypassTests(unittest.TestCase):
     """
     Verify additional users bypass NAT redirection and output filtering.
     """
+
+    def test_root_and_apt_are_not_implicit_redirect_exclusions(self) -> None:
+        """
+        Removing root and APT from configuration subjects them to proxy policy.
+        """
+
+        firewall = Iptables("iptables")
+        rules: list[Rule] = []
+        with patch.object(firewall, "ensure_first", side_effect=rules.append):
+            hook.add_redirect_rule(firewall, 443)
+            hook.add_dns_redirect_rule(firewall, "udp")
+
+        for rule in rules:
+            self.assertNotIn("0", rule.args)
+            self.assertNotIn("root", rule.args)
+            self.assertNotIn(hook.APT_USER, rule.args)
+            self.assertIn(hook.USER, rule.args)
 
     def test_redirects_exclude_configured_user(self) -> None:
         """

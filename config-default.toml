@@ -22,9 +22,12 @@ flow_history_clear_interval = 1000
 # flow history entries.
 flow_history_keep_entries = 500
 
-# Additional existing local users that may connect directly to any network
-# destination without passing through mitmwall. The default is an empty array.
-bypass_users = []
+# Existing local users that may connect directly to any network destination
+# without passing through mitmwall. Root is included for host administration and
+# troubleshooting. APT's _apt sandbox user is included so root-invoked package
+# downloads retain their normal privilege separation. Remove either account to
+# subject its traffic to mitmwall's proxy and outbound firewall policy.
+bypass_users = ["root", "_apt"]
 
 # Custom iptables bypass rules. Allow some IP ranges or ports to bypass the
 # firewall and proxy. Bypassed traffic will not be visible in mitmweb and will

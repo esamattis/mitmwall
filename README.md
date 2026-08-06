@@ -36,13 +36,14 @@ The name is a wordplay for mitmproxy + firewall = mitmwall.
   - keep custom and time-sync NAT bypasses ahead of the generic redirects
   - redirect outbound TCP port `80` and `443` traffic to the HTTP(S) proxy
   - redirect outbound TCP/UDP port `53` traffic to the DNS proxy
-    - only allow root, APT's `_apt` sandbox user, the dedicated `mitmwall` user,
-      configured `bypass_users`, `systemd-resolve`, and installed time-sync
-      service users to make required upstream connections
+    - only allow the dedicated `mitmwall` user, configured `bypass_users`,
+      `systemd-resolve`, and installed time-sync service users to make required
+      upstream connections
       - the proxy is running as the `mitmwall` user
-      - root is left unrestricted for host administration and troubleshooting
-      - `_apt` is left unrestricted because root-invoked APT download workers
-        intentionally drop privileges to that dedicated user
+      - the default `bypass_users` include root for host administration and
+        troubleshooting
+      - the default `bypass_users` include `_apt` because root-invoked APT
+        download workers intentionally drop privileges to that dedicated user
       - `systemd-resolve` is left able to perform resolver recursion without
         looping back into the DNS proxy
       - installed time-sync service users such as `systemd-timesync`, `_chrony`,
@@ -176,11 +177,14 @@ Restart the service after changing addon configuration:
 sudo systemctl restart mitmwall
 ```
 
-To grant additional trusted local accounts unrestricted outbound access, list
-them in `bypass_users`. Every named account must already exist:
+The default configuration grants root and APT's `_apt` sandbox user unrestricted
+outbound access. Remove either entry to subject that account to mitmwall's proxy
+and outbound firewall policy. To grant other trusted local accounts unrestricted
+outbound access, list them in `bypass_users`. Every named account must already
+exist:
 
 ```toml
-bypass_users = ["buildbot", "deployment"]
+bypass_users = ["root", "_apt", "buildbot", "deployment"]
 ```
 
 Traffic from these users is not visible in mitmweb and is not checked against
@@ -227,10 +231,10 @@ sudo grep '^web_password:' /opt/mitmwall/mitmweb/config.yaml
 mitmwall runs mitmproxy in both transparent HTTP(S) mode and DNS mode. The
 firewall redirects ordinary users' TCP/UDP port 53 traffic, including attempts to
 query local resolvers such as `127.0.0.53` or public resolvers such as `1.1.1.1`,
-to mitmproxy's local DNS listener. Root, APT's `_apt` sandbox user, the
-`mitmwall` proxy user, configured `bypass_users`, and the `systemd-resolve` user
-are excluded so package administration, proxy upstream lookups, and system
-resolver recursion do not loop back into the proxy.
+to mitmproxy's local DNS listener. The `mitmwall` proxy user, configured
+`bypass_users` (root and `_apt` by default), and the `systemd-resolve` user are
+excluded so proxy upstream lookups and system resolver recursion do not loop back
+into the proxy.
 
 By default, the mitmproxy addon applies the same rule files in
 `/etc/mitmwall/rules.d` to DNS queries before forwarding them upstream. DNS
@@ -249,17 +253,17 @@ redirection rules.
 
 Well, first of, AI agents helped creating this. So there is that 😅
 
-The security model relies on Linux user permissions: root, the dedicated
-`mitmwall` user, APT's dedicated `_apt` sandbox user, and accounts explicitly
-listed in `bypass_users` can access the network freely. Root is intentionally
-exempt so administrators can manage and
-troubleshoot the host without going through the proxy. `_apt` is exempt so APT
-can retain its normal privilege separation when invoked by root. So if the
-attacker can do privilege escalation:
+The security model relies on Linux user permissions: the dedicated `mitmwall`
+user and accounts listed in `bypass_users` can access the network freely. The
+default configuration lists root so administrators can manage and troubleshoot
+the host without going through the proxy, and `_apt` so APT can retain its normal
+privilege separation when invoked by root. Operators can remove either default.
+So if the attacker can do privilege escalation:
 
   - to the `mitmwall` user they can access the network
-  - to the `_apt` user they can access the network
-  - to root they can access the network and can just stop the service
+  - to the `_apt` user they can access the network when its default bypass remains
+  - to root they can access the network when its default bypass remains, and can
+    stop the service regardless
 
 ### DNS-based exfiltration
 

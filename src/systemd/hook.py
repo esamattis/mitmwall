@@ -30,7 +30,7 @@ from src.utils.toml_helpers import is_toml_array, is_toml_table
 
 USER = "mitmwall"
 APT_USER = "_apt"
-BUILTIN_BYPASS_USERS = ("0", USER, APT_USER)
+REQUIRED_BYPASS_USERS = (USER,)
 PROXY_PORT = 58080
 DNS_PORT = 58053
 WEB_PORT = 58081
@@ -48,7 +48,7 @@ FORWARD_GUARD_COMMENT = "mitmwall-forwarding-guard"
 # Policy installed by the "start" action:
 # - Redirect outbound HTTP/HTTPS from non-proxy users to the local proxy.
 # - Allow established/related packets so inbound services such as SSH keep working.
-# - Allow root, APT's sandbox user, and the proxy user to make outbound upstream
+# - Allow configured bypass users and the proxy user to make outbound upstream
 #   connections.
 # - Redirect outbound DNS from non-proxy users to the local DNS proxy.
 # - Allow the system DNS resolver (systemd-resolve) to reach upstream DNS.
@@ -391,16 +391,12 @@ def add_redirect_rule(
     firewall: Iptables, dport: int, bypass_users: tuple[str, ...] = ()
 ) -> None:
     """
-    Capture direct outbound HTTP/HTTPS attempts from users other than root, the
-    proxy user, and APT's sandbox user, then redirect them to the local proxy.
+    Capture direct outbound HTTP/HTTPS attempts from users other than the proxy
+    user and configured bypass users, then redirect them to the local proxy.
 
-    Install the NAT redirect idempotently.  The owner matches exclude root,
-    APT's sandbox user, and the dedicated proxy user.  mitmproxy itself runs as
-    ``USER`` and must be able to open the real upstream HTTP/HTTPS connection;
+    Install the NAT redirect idempotently.  mitmproxy itself runs as ``USER``
+    and must be able to open the real upstream HTTP/HTTPS connection;
     redirecting the proxy's own traffic back into the proxy would create a loop.
-    Root is also
-    allowed to administer the host and troubleshoot networking without being
-    captured by the transparent proxy.
 
     All other local users trying to connect directly to TCP port 80 or 443 are
     transparently redirected to ``PROXY_PORT``, where mitmproxy can inspect the
@@ -420,7 +416,7 @@ def add_redirect_rule(
                 "!",
                 "-o",
                 "lo",
-                *owner_exclusion_args((*BUILTIN_BYPASS_USERS, *bypass_users)),
+                *owner_exclusion_args((*REQUIRED_BYPASS_USERS, *bypass_users)),
                 "--dport",
                 str(dport),
                 "-m",
@@ -485,9 +481,8 @@ def add_dns_redirect_rule(
     """
     Capture DNS attempts from ordinary users, including queries aimed at local
     resolvers such as 127.0.0.53, and send them to mitmproxy's DNS mode listener.
-    Exclude root, APT's sandbox user, mitmproxy, and systemd-resolved so package
-    administration, DNS proxy upstream resolution, and resolver recursion do not
-    loop back into the proxy.
+    Exclude mitmproxy, configured bypass users, and systemd-resolved so DNS proxy
+    upstream resolution and resolver recursion do not loop back into the proxy.
     """
 
     firewall.ensure_first(
@@ -498,7 +493,7 @@ def add_dns_redirect_rule(
                 "-p",
                 protocol,
                 *owner_exclusion_args(
-                    (*BUILTIN_BYPASS_USERS, "systemd-resolve", *bypass_users)
+                    (*REQUIRED_BYPASS_USERS, "systemd-resolve", *bypass_users)
                 ),
                 "--dport",
                 "53",
@@ -709,7 +704,7 @@ def add_output_filter(
     """
     Enforce the outbound allowlist.  Reply-direction established/related packets
     are allowed so inbound connections (for example SSH) are not broken.  The
-    proxy user, root, and APT's sandbox user are allowed to reach the network,
+    proxy user and configured bypass users are allowed to reach the network,
     ICMPv6 control traffic is allowed for the IPv6 stack, loopback traffic is
     allowed so localhost services remain reachable, clients are allowed to reach
     the local HTTP proxy, DNS proxy, and web UI on this host, and every other
@@ -743,9 +738,9 @@ def add_output_filter(
         "ACCEPT",
     )
 
-    # Operator-configured users and the built-in administrative, package manager,
-    # and proxy accounts bypass the proxy and fail-closed output policy.
-    for bypass_user in (*bypass_users, *BUILTIN_BYPASS_USERS):
+    # Operator-configured users and the required proxy account bypass the proxy
+    # and fail-closed output policy.
+    for bypass_user in (*bypass_users, *REQUIRED_BYPASS_USERS):
         append_output(
             "-m",
             "owner",
@@ -868,10 +863,10 @@ def remove_output_filter(firewall: Iptables) -> None:
     """
     Remove the outbound allowlist/blocklist chain installed by the "start" action.
     That chain allows reply-direction established/related packets so inbound
-    services such as SSH keep working, allows root, APT's sandbox user, and the
-    proxy user to reach upstream hosts, allows loopback traffic, allows other users
-    to connect to the local HTTP proxy, DNS proxy, and web UI ports on this host,
-    and blocks all other outbound traffic.
+    services such as SSH keep working, allows configured bypass users and the
+    proxy user to reach upstream hosts, allows loopback traffic, allows other
+    users to connect to the local HTTP proxy, DNS proxy, and web UI ports on this
+    host, and blocks all other outbound traffic.
     """
 
     if not firewall.chain_exists("filter", CHAIN):
@@ -980,7 +975,7 @@ def load_config(config_path: Path) -> dict[str, object]:
 
 def parse_bypass_users(config_path: Path = ADDON_CONFIG_FILE) -> tuple[str, ...]:
     """
-    Parse and validate additional users with unrestricted outbound access.
+    Parse and validate users with unrestricted outbound access.
     """
 
     config_value = load_config(config_path)
@@ -1002,10 +997,7 @@ def parse_bypass_users(config_path: Path = ADDON_CONFIG_FILE) -> tuple[str, ...]
                 error_prefix
                 + f"'bypass_users' entry {index} names unknown user {user_value!r}"
             ) from error
-        if user_value not in users and user_value not in {
-            "root",
-            *BUILTIN_BYPASS_USERS,
-        }:
+        if user_value not in users and user_value not in REQUIRED_BYPASS_USERS:
             users.append(user_value)
     return tuple(users)
 
