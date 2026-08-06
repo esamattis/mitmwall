@@ -30,6 +30,7 @@ from src.utils.toml_helpers import is_toml_array, is_toml_table
 
 USER = "mitmwall"
 APT_USER = "_apt"
+BUILTIN_BYPASS_USERS = ("0", USER, APT_USER)
 PROXY_PORT = 58080
 DNS_PORT = 58053
 WEB_PORT = 58081
@@ -419,7 +420,7 @@ def add_redirect_rule(
                 "!",
                 "-o",
                 "lo",
-                *owner_exclusion_args(("0", USER, APT_USER, *bypass_users)),
+                *owner_exclusion_args((*BUILTIN_BYPASS_USERS, *bypass_users)),
                 "--dport",
                 str(dport),
                 "-m",
@@ -497,7 +498,7 @@ def add_dns_redirect_rule(
                 "-p",
                 protocol,
                 *owner_exclusion_args(
-                    ("0", USER, "systemd-resolve", APT_USER, *bypass_users)
+                    (*BUILTIN_BYPASS_USERS, "systemd-resolve", *bypass_users)
                 ),
                 "--dport",
                 "53",
@@ -742,8 +743,9 @@ def add_output_filter(
         "ACCEPT",
     )
 
-    # Operator-configured users bypass the proxy and fail-closed output policy.
-    for bypass_user in bypass_users:
+    # Operator-configured users and the built-in administrative, package manager,
+    # and proxy accounts bypass the proxy and fail-closed output policy.
+    for bypass_user in (*bypass_users, *BUILTIN_BYPASS_USERS):
         append_output(
             "-m",
             "owner",
@@ -752,41 +754,6 @@ def add_output_filter(
             "-j",
             "ACCEPT",
         )
-
-    # Root needs unrestricted outbound access for host administration and
-    # troubleshooting, matching the bypass behavior of the proxy user.
-    append_output(
-        "-m",
-        "owner",
-        "--uid-owner",
-        "0",
-        "-j",
-        "ACCEPT",
-    )
-
-    # APT intentionally drops its download workers from root to _apt.  Preserve
-    # that sandbox while retaining the unrestricted package-management behavior
-    # expected when an administrator invokes APT as root.
-    append_output(
-        "-m",
-        "owner",
-        "--uid-owner",
-        APT_USER,
-        "-j",
-        "ACCEPT",
-    )
-
-    # mitmproxy runs as the dedicated mitmwall user.  It needs unrestricted
-    # outbound access so, after accepting a client flow, it can create the real
-    # upstream connection to the destination server.
-    append_output(
-        "-m",
-        "owner",
-        "--uid-owner",
-        USER,
-        "-j",
-        "ACCEPT",
-    )
 
     # systemd-resolved runs as systemd-resolve on Ubuntu.  Let only that resolver
     # process make upstream DNS queries; regular applications are redirected to
@@ -1035,7 +1002,10 @@ def parse_bypass_users(config_path: Path = ADDON_CONFIG_FILE) -> tuple[str, ...]
                 error_prefix
                 + f"'bypass_users' entry {index} names unknown user {user_value!r}"
             ) from error
-        if user_value not in users and user_value not in {"root", USER, APT_USER}:
+        if user_value not in users and user_value not in {
+            "root",
+            *BUILTIN_BYPASS_USERS,
+        }:
             users.append(user_value)
     return tuple(users)
 
