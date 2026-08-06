@@ -18,14 +18,14 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, cast
 
 import tomllib
 
 from src.addon.constants import ADDON_CONFIG_FILE, WEB_RULES_FILE
+from src.systemd.iptables import Iptables, IptablesCommand, Rule, Table
 from src.systemd.migrations import clear_legacy_redirect_rules, run_startup_migrations
 from src.systemd.resolv_conf import configure_system_resolver, restore_system_resolver
-from src.utils.toml_helpers import is_toml_table
+from src.utils.toml_helpers import is_toml_array, is_toml_table
 
 USER = "mitmwall"
 APT_USER = "_apt"
@@ -35,9 +35,6 @@ WEB_PORT = 58081
 CHAIN = "MITMWALL_OUTPUT"
 COMMENT = "mitmwall-custom"
 REDIRECT_COMMENT = "mitmwall-redirect"
-XTABLES_WAIT_SECONDS = 10
-RULE_ABSENT_ERROR = "Bad rule (does a matching rule exist in that chain?)."
-CHAIN_ABSENT_ERROR = "No chain/target/match by that name."
 FORWARDING_STATE_DIR = Path("/run/mitmwall")
 FORWARDING_STATE_FILE = FORWARDING_STATE_DIR / "forwarding-state.json"
 IPV4_FORWARDING = "net.ipv4.ip_forward"
@@ -59,76 +56,15 @@ FORWARD_GUARD_COMMENT = "mitmwall-forwarding-guard"
 # - Allow other users to connect only to the local proxy, DNS proxy, and web UI ports on this host.
 # - Drop all other new outbound traffic so applications cannot bypass the proxies.
 
-
-def run_xtables(
-    table_cmd: str, args: list[str], *, check: bool = True
-) -> subprocess.CompletedProcess[str]:
-    """
-    Run an iptables-family command after waiting for the shared xtables lock.
-
-    A bounded wait prevents transient concurrent firewall updates from failing
-    immediately while still making a persistent lock problem visible.
-    """
-
-    command = [table_cmd, "-w", str(XTABLES_WAIT_SECONDS), *args]
-    return subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        check=check,
-        env={**os.environ, "LC_ALL": "C"},
-    )
+IPV4 = Iptables("iptables")
+IPV6 = Iptables("ip6tables")
+FIREWALLS = (IPV4, IPV6)
 
 
-def probe_xtables(
-    table_cmd: str, args: list[str], expected_absence: str
-) -> subprocess.CompletedProcess[str] | None:
-    """
-    Run an xtables existence/list probe and distinguish absence from failure.
+def firewall_for(command: IptablesCommand) -> Iptables:
+    """Return the shared firewall client for an iptables command."""
 
-    Only exit status 1 with the diagnostic specific to the requested absent
-    state is idempotent. Lock timeouts, permission failures, unsupported
-    features, and malformed commands are raised to the caller.
-    """
-
-    result = run_xtables(table_cmd, args, check=False)
-    if result.returncode == 0:
-        return result
-    if result.returncode == 1 and result.stderr.rstrip().endswith(expected_absence):
-        return None
-    raise subprocess.CalledProcessError(
-        result.returncode,
-        [table_cmd, "-w", str(XTABLES_WAIT_SECONDS), *args],
-        output=result.stdout,
-        stderr=result.stderr,
-    )
-
-
-def place_rule_first(
-    table_cmd: str, table: str, chain: str, rule_args: list[str]
-) -> None:
-    """
-    Place exactly one copy of a managed rule at the head of a built-in chain.
-
-    Removing all matching copies before insertion repairs rules left behind an
-    unrelated terminal rule and keeps repeated service starts idempotent.
-    """
-
-    while True:
-        existing = probe_xtables(
-            table_cmd,
-            ["-t", table, "-C", chain, *rule_args],
-            RULE_ABSENT_ERROR,
-        )
-        if existing is None:
-            break
-        _ = run_xtables(
-            table_cmd, ["-t", table, "-D", chain, *rule_args]
-        )
-
-    _ = run_xtables(
-        table_cmd, ["-t", table, "-I", chain, "1", *rule_args]
-    )
+    return IPV4 if command == "iptables" else IPV6
 
 
 @dataclass(frozen=True)
@@ -148,7 +84,7 @@ class CustomRule:
     A validated custom firewall bypass rule and its address family command.
     """
 
-    table_cmd: Literal["iptables", "ip6tables"]
+    table_cmd: IptablesCommand
     network: str
     port: int
 
@@ -250,31 +186,40 @@ def read_forwarding_state() -> ForwardingState:
         raise RuntimeError("saved forwarding state is not a root-only regular file")
 
     try:
-        value = cast(
-            object, json.loads(FORWARDING_STATE_FILE.read_text(encoding="utf-8"))
+        value: object = json.loads(  # pyright: ignore[reportAny]
+            FORWARDING_STATE_FILE.read_text(encoding="utf-8")
         )
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise RuntimeError("saved forwarding state is corrupt") from error
-    if not isinstance(value, dict):
+    if not is_toml_table(value):
         raise RuntimeError("saved forwarding state is not a JSON object")
 
-    fields = cast(dict[object, object], value)
     expected_fields = {
         "ipv4_forwarding",
         "ipv6_forwarding",
         "ipv4_send_redirects",
     }
-    if set(fields) != expected_fields:
+    if set(value) != expected_fields:
         raise RuntimeError("saved forwarding state has invalid fields")
-    if any(type(fields[field]) is not int for field in expected_fields):
+    ipv4_forwarding = value["ipv4_forwarding"]
+    ipv6_forwarding = value["ipv6_forwarding"]
+    ipv4_send_redirects = value["ipv4_send_redirects"]
+    if not all(
+        type(field) is int
+        for field in (ipv4_forwarding, ipv6_forwarding, ipv4_send_redirects)
+    ):
         raise RuntimeError("saved forwarding state has non-integer values")
-    if any(fields[field] not in (0, 1) for field in expected_fields):
+    if (
+        ipv4_forwarding not in (0, 1)
+        or ipv6_forwarding not in (0, 1)
+        or ipv4_send_redirects not in (0, 1)
+    ):
         raise RuntimeError("saved forwarding state has invalid values")
 
     return ForwardingState(
-        cast(int, fields["ipv4_forwarding"]),
-        cast(int, fields["ipv6_forwarding"]),
-        cast(int, fields["ipv4_send_redirects"]),
+        ipv4_forwarding,
+        ipv6_forwarding,
+        ipv4_send_redirects,
     )
 
 
@@ -323,25 +268,23 @@ def add_forwarding_guards(state: ForwardingState) -> None:
     """
 
     if state.ipv4_forwarding == 0:
-        place_rule_first("iptables", "filter", "FORWARD", forward_guard_rule())
+        IPV4.ensure_first(
+            Rule("filter", "FORWARD", tuple(forward_guard_rule()))
+        )
     if state.ipv6_forwarding == 0:
-        place_rule_first("ip6tables", "filter", "FORWARD", forward_guard_rule())
+        IPV6.ensure_first(
+            Rule("filter", "FORWARD", tuple(forward_guard_rule()))
+        )
 
 
-def remove_forwarding_guard(table_cmd: str) -> None:
+def remove_forwarding_guard(firewall: Iptables) -> None:
     """
     Remove every copy of mitmwall's transit forwarding guard.
     """
 
-    rule = forward_guard_rule()
-    while probe_xtables(
-        table_cmd,
-        ["-t", "filter", "-C", "FORWARD", *rule],
-        RULE_ABSENT_ERROR,
-    ) is not None:
-        _ = run_xtables(
-            table_cmd, ["-t", "filter", "-D", "FORWARD", *rule]
-        )
+    firewall.remove_all(
+        Rule("filter", "FORWARD", tuple(forward_guard_rule()))
+    )
 
 
 def remove_forwarding_guards(state: ForwardingState) -> None:
@@ -350,9 +293,9 @@ def remove_forwarding_guards(state: ForwardingState) -> None:
     """
 
     if state.ipv4_forwarding == 0:
-        remove_forwarding_guard("iptables")
+        remove_forwarding_guard(IPV4)
     if state.ipv6_forwarding == 0:
-        remove_forwarding_guard("ip6tables")
+        remove_forwarding_guard(IPV6)
 
 
 def restore_forwarding() -> bool:
@@ -431,7 +374,7 @@ def owner_exclusion_args(users: tuple[str, ...]) -> list[str]:
 
 
 def add_redirect_rule(
-    table_cmd: str, dport: int, bypass_users: tuple[str, ...] = ()
+    firewall: Iptables, dport: int, bypass_users: tuple[str, ...] = ()
 ) -> None:
     """
     Capture direct outbound HTTP/HTTPS attempts from users other than root, the
@@ -453,46 +396,44 @@ def add_redirect_rule(
     reachable on their real ports instead of being captured by mitmproxy.
     """
 
-    place_rule_first(
-        table_cmd,
-        "nat",
-        "OUTPUT",
-        [
-            "-p",
-            "tcp",
-            "!",
-            "-o",
-            "lo",
-            *owner_exclusion_args(("0", USER, APT_USER, *bypass_users)),
-            "--dport",
-            str(dport),
-            "-m",
-            "comment",
-            "--comment",
-            REDIRECT_COMMENT,
-            "-j",
-            "REDIRECT",
-            "--to-port",
-            str(PROXY_PORT),
-        ],
+    firewall.ensure_first(
+        Rule(
+            "nat",
+            "OUTPUT",
+            (
+                "-p",
+                "tcp",
+                "!",
+                "-o",
+                "lo",
+                *owner_exclusion_args(("0", USER, APT_USER, *bypass_users)),
+                "--dport",
+                str(dport),
+                "-m",
+                "comment",
+                "--comment",
+                REDIRECT_COMMENT,
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                str(PROXY_PORT),
+            ),
+        )
     )
 
 
-def remove_redirect_rule(table_cmd: str, dport: int) -> None:
+def remove_redirect_rule(firewall: Iptables, dport: int) -> None:
     """
     Remove the transparent HTTP/HTTPS redirects installed by the "start" action.
     These redirects capture direct outbound web traffic from non-proxy users and
     send it to the local proxy port.
     """
 
-    while True:
-        existing = probe_xtables(
-            table_cmd,
-            [
-                "-t",
-                "nat",
-                "-C",
-                "OUTPUT",
+    firewall.remove_all(
+        Rule(
+            "nat",
+            "OUTPUT",
+            (
                 "-p",
                 "tcp",
                 "!",
@@ -519,50 +460,13 @@ def remove_redirect_rule(table_cmd: str, dport: int) -> None:
                 "REDIRECT",
                 "--to-port",
                 str(PROXY_PORT),
-            ],
-            RULE_ABSENT_ERROR,
+            ),
         )
-        if existing is None:
-            break
-        _ = run_xtables(
-            table_cmd,
-            [
-                "-t",
-                "nat",
-                "-D",
-                "OUTPUT",
-                "-p",
-                "tcp",
-                "!",
-                "-o",
-                "lo",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                "0",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                USER,
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                APT_USER,
-                "--dport",
-                str(dport),
-                "-j",
-                "REDIRECT",
-                "--to-port",
-                str(PROXY_PORT),
-            ],
-        )
+    )
 
 
 def add_dns_redirect_rule(
-    table_cmd: str, protocol: str, bypass_users: tuple[str, ...] = ()
+    firewall: Iptables, protocol: str, bypass_users: tuple[str, ...] = ()
 ) -> None:
     """
     Capture DNS attempts from ordinary users, including queries aimed at local
@@ -572,43 +476,41 @@ def add_dns_redirect_rule(
     loop back into the proxy.
     """
 
-    place_rule_first(
-        table_cmd,
-        "nat",
-        "OUTPUT",
-        [
-            "-p",
-            protocol,
-            *owner_exclusion_args(
-                ("0", USER, "systemd-resolve", APT_USER, *bypass_users)
+    firewall.ensure_first(
+        Rule(
+            "nat",
+            "OUTPUT",
+            (
+                "-p",
+                protocol,
+                *owner_exclusion_args(
+                    ("0", USER, "systemd-resolve", APT_USER, *bypass_users)
+                ),
+                "--dport",
+                "53",
+                "-m",
+                "comment",
+                "--comment",
+                REDIRECT_COMMENT,
+                "-j",
+                "REDIRECT",
+                "--to-port",
+                str(DNS_PORT),
             ),
-            "--dport",
-            "53",
-            "-m",
-            "comment",
-            "--comment",
-            REDIRECT_COMMENT,
-            "-j",
-            "REDIRECT",
-            "--to-port",
-            str(DNS_PORT),
-        ],
+        )
     )
 
 
-def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
+def remove_dns_redirect_rule(firewall: Iptables, protocol: str) -> None:
     """
     Remove the DNS redirects installed by the "start" action.
     """
 
-    while True:
-        existing = probe_xtables(
-            table_cmd,
-            [
-                "-t",
-                "nat",
-                "-C",
-                "OUTPUT",
+    firewall.remove_all(
+        Rule(
+            "nat",
+            "OUTPUT",
+            (
                 "-p",
                 protocol,
                 "-m",
@@ -637,51 +539,12 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
                 "REDIRECT",
                 "--to-port",
                 str(DNS_PORT),
-            ],
-            RULE_ABSENT_ERROR,
+            ),
         )
-        if existing is None:
-            break
-        _ = run_xtables(
-            table_cmd,
-            [
-                "-t",
-                "nat",
-                "-D",
-                "OUTPUT",
-                "-p",
-                protocol,
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                "0",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                USER,
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                "systemd-resolve",
-                "-m",
-                "owner",
-                "!",
-                "--uid-owner",
-                APT_USER,
-                "--dport",
-                "53",
-                "-j",
-                "REDIRECT",
-                "--to-port",
-                str(DNS_PORT),
-            ],
-        )
+    )
 
 
-def add_ntp_filter_rules(table_cmd: str) -> None:
+def add_ntp_filter_rules(firewall: Iptables) -> None:
     """
     Allow installed Ubuntu time synchronization services to reach upstream NTP.
     This runs in the filter table, so it decides whether a packet may leave the
@@ -704,68 +567,65 @@ def add_ntp_filter_rules(table_cmd: str) -> None:
             continue
         ntp_uid = result.stdout.strip()
         # Allow NTP synchronization traffic.
-        _ = run_xtables(
-            table_cmd,
-            [
-                "-t",
+        firewall.append(
+            Rule(
                 "filter",
-                "-A",
                 CHAIN,
-                "-p",
-                "udp",
-                "--dport",
-                "123",
-                "-m",
-                "owner",
-                "--uid-owner",
-                ntp_uid,
-                "-j",
-                "ACCEPT",
-            ],
+                (
+                    "-p",
+                    "udp",
+                    "--dport",
+                    "123",
+                    "-m",
+                    "owner",
+                    "--uid-owner",
+                    ntp_uid,
+                    "-j",
+                    "ACCEPT",
+                ),
+            )
         )
         # Allow direct DNS queries (bypassed from the proxy by
         # add_ntp_dns_bypass_rule) to actually leave the host.
-        _ = run_xtables(
-            table_cmd,
-            [
-                "-t",
+        firewall.append(
+            Rule(
                 "filter",
-                "-A",
                 CHAIN,
-                "-p",
-                "udp",
-                "--dport",
-                "53",
-                "-m",
-                "owner",
-                "--uid-owner",
-                ntp_uid,
-                "-j",
-                "ACCEPT",
-            ],
+                (
+                    "-p",
+                    "udp",
+                    "--dport",
+                    "53",
+                    "-m",
+                    "owner",
+                    "--uid-owner",
+                    ntp_uid,
+                    "-j",
+                    "ACCEPT",
+                ),
+            )
         )
-        _ = run_xtables(
-            table_cmd,
-            [
-                "-t",
+        firewall.append(
+            Rule(
                 "filter",
-                "-A",
                 CHAIN,
-                "-p",
-                "tcp",
-                "--dport",
-                "53",
-                "-m",
-                "owner",
-                "--uid-owner",
-                ntp_uid,
-                "-j",
-                "ACCEPT",
-            ],
+                (
+                    "-p",
+                    "tcp",
+                    "--dport",
+                    "53",
+                    "-m",
+                    "owner",
+                    "--uid-owner",
+                    ntp_uid,
+                    "-j",
+                    "ACCEPT",
+                ),
+            )
         )
 
 
-def add_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
+def add_ntp_dns_bypass_rule(firewall: Iptables, protocol: str) -> None:
     """
     NTP clients need to resolve server hostnames (e.g. pool.ntp.org) before
     syncing time.  This runs in the nat table and stops the generic DNS REDIRECT
@@ -787,26 +647,27 @@ def add_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
         ntp_uid = result.stdout.strip()
         # Move the bypass to the top on every start so it remains ahead of both
         # generic redirects and unrelated rules.
-        place_rule_first(
-            table_cmd,
-            "nat",
-            "OUTPUT",
-            [
-                "-p",
-                protocol,
-                "-m",
-                "owner",
-                "--uid-owner",
-                ntp_uid,
-                "--dport",
-                "53",
-                "-j",
-                "ACCEPT",
-            ],
+        firewall.ensure_first(
+            Rule(
+                "nat",
+                "OUTPUT",
+                (
+                    "-p",
+                    protocol,
+                    "-m",
+                    "owner",
+                    "--uid-owner",
+                    ntp_uid,
+                    "--dport",
+                    "53",
+                    "-j",
+                    "ACCEPT",
+                ),
+            )
         )
 
 
-def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
+def remove_ntp_dns_bypass_rule(firewall: Iptables, protocol: str) -> None:
     """
     Remove the NTP DNS bypass rules installed by the "start" action.
     """
@@ -820,14 +681,11 @@ def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
         if result.returncode != 0:
             continue
         ntp_uid = result.stdout.strip()
-        while True:
-            existing = probe_xtables(
-                table_cmd,
-                [
-                    "-t",
-                    "nat",
-                    "-C",
-                    "OUTPUT",
+        firewall.remove_all(
+            Rule(
+                "nat",
+                "OUTPUT",
+                (
                     "-p",
                     protocol,
                     "-m",
@@ -838,34 +696,13 @@ def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
                     "53",
                     "-j",
                     "ACCEPT",
-                ],
-                RULE_ABSENT_ERROR,
+                ),
             )
-            if existing is None:
-                break
-            _ = run_xtables(
-                table_cmd,
-                [
-                    "-t",
-                    "nat",
-                    "-D",
-                    "OUTPUT",
-                    "-p",
-                    protocol,
-                    "-m",
-                    "owner",
-                    "--uid-owner",
-                    ntp_uid,
-                    "--dport",
-                    "53",
-                    "-j",
-                    "ACCEPT",
-                ],
-            )
+        )
 
 
 def add_output_filter(
-    table_cmd: str, bypass_users: tuple[str, ...] = ()
+    firewall: Iptables, bypass_users: tuple[str, ...] = ()
 ) -> None:
     """
     Enforce the outbound allowlist.  Reply-direction established/related packets
@@ -877,136 +714,89 @@ def add_output_filter(
     outbound packet is blocked.
     """
 
-    existing_chain = probe_xtables(
-        table_cmd,
-        ["-t", "filter", "-L", CHAIN],
-        CHAIN_ABSENT_ERROR,
-    )
-    if existing_chain is None:
-        _ = run_xtables(
-            table_cmd, ["-t", "filter", "-N", CHAIN]
-        )
+    def append_output(*args: str) -> None:
+        """Append one rule to the managed output chain."""
+
+        firewall.append(Rule("filter", CHAIN, args))
+
+    firewall.ensure_chain("filter", CHAIN)
 
     # Rebuild the managed chain on every service start.  Flushing only this
     # project-specific chain keeps the rules deterministic without disturbing
     # unrelated administrator-managed firewall rules in other chains.
-    _ = run_xtables(
-        table_cmd, ["-t", "filter", "-F", CHAIN]
-    )
+    firewall.flush_chain("filter", CHAIN)
 
     # For inbound sessions, locally generated responses flow in conntrack's REPLY
     # direction.  Restricting this exception to REPLY preserves sessions such as
     # SSH without accepting ORIGINAL-direction packets from outbound connections
     # that ordinary users established before this chain was installed or rebuilt.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "--ctdir",
-            "REPLY",
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-m",
+        "conntrack",
+        "--ctstate",
+        "ESTABLISHED,RELATED",
+        "--ctdir",
+        "REPLY",
+        "-j",
+        "ACCEPT",
     )
 
     # Operator-configured users bypass the proxy and fail-closed output policy.
     for bypass_user in bypass_users:
-        _ = run_xtables(
-            table_cmd,
-            [
-                "-t",
-                "filter",
-                "-A",
-                CHAIN,
-                "-m",
-                "owner",
-                "--uid-owner",
-                bypass_user,
-                "-j",
-                "ACCEPT",
-            ],
+        append_output(
+            "-m",
+            "owner",
+            "--uid-owner",
+            bypass_user,
+            "-j",
+            "ACCEPT",
         )
 
     # Root needs unrestricted outbound access for host administration and
     # troubleshooting, matching the bypass behavior of the proxy user.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-m",
-            "owner",
-            "--uid-owner",
-            "0",
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-m",
+        "owner",
+        "--uid-owner",
+        "0",
+        "-j",
+        "ACCEPT",
     )
 
     # APT intentionally drops its download workers from root to _apt.  Preserve
     # that sandbox while retaining the unrestricted package-management behavior
     # expected when an administrator invokes APT as root.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-m",
-            "owner",
-            "--uid-owner",
-            APT_USER,
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-m",
+        "owner",
+        "--uid-owner",
+        APT_USER,
+        "-j",
+        "ACCEPT",
     )
 
     # mitmproxy runs as the dedicated mitmwall user.  It needs unrestricted
     # outbound access so, after accepting a client flow, it can create the real
     # upstream connection to the destination server.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-m",
-            "owner",
-            "--uid-owner",
-            USER,
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-m",
+        "owner",
+        "--uid-owner",
+        USER,
+        "-j",
+        "ACCEPT",
     )
 
     # systemd-resolved runs as systemd-resolve on Ubuntu.  Let only that resolver
     # process make upstream DNS queries; regular applications are redirected to
     # mitmproxy's local DNS listener before this filter runs.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-m",
-            "owner",
-            "--uid-owner",
-            "systemd-resolve",
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-m",
+        "owner",
+        "--uid-owner",
+        "systemd-resolve",
+        "-j",
+        "ACCEPT",
     )
 
     # Time synchronization clients run as unprivileged service users.  The filter
@@ -1014,9 +804,9 @@ def add_output_filter(
     # traffic.  Note: the DNS bypass itself happens in the nat table earlier
     # (add_ntp_dns_bypass_rule); this only grants permission for the already-
     # bypassed packets to leave the host.
-    add_ntp_filter_rules(table_cmd)
+    add_ntp_filter_rules(firewall)
 
-    if table_cmd == "ip6tables":
+    if firewall.is_ipv6:
         # ICMPv6 is part of the IPv6 control plane, including Neighbor Discovery,
         # router discovery, address configuration, and Path MTU Discovery. RFC
         # 4890's required and recommended messages extend beyond the familiar
@@ -1024,127 +814,87 @@ def add_output_filter(
         # or future Linux IPv6 behavior. Allow the complete protocol instead.
         # Under mitmwall's threat model, unprivileged processes lack CAP_NET_RAW;
         # Linux ping sockets can emit only echo requests, not arbitrary ICMPv6.
-        _ = run_xtables(
-            table_cmd,
-            [
-                "-t",
-                "filter",
-                "-A",
-                CHAIN,
-                "-p",
-                "ipv6-icmp",
-                "-j",
-                "ACCEPT",
-            ],
+        append_output(
+            "-p",
+            "ipv6-icmp",
+            "-j",
+            "ACCEPT",
         )
 
     # Permit connections to services on this machine.  This keeps localhost and
     # other loopback traffic working while the default policy below still blocks
     # outbound bypass attempts to remote hosts.
-    _ = run_xtables(
-        table_cmd,
-        ["-t", "filter", "-A", CHAIN, "-o", "lo", "-j", "ACCEPT"],
-    )
+    append_output("-o", "lo", "-j", "ACCEPT")
 
     # Permit local clients to reach the transparent mitmproxy listener.  The
     # destination must be LOCAL so this does not become a general allow rule for
     # remote hosts that happen to use the same TCP port.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-p",
-            "tcp",
-            "--dport",
-            str(PROXY_PORT),
-            "-m",
-            "addrtype",
-            "--dst-type",
-            "LOCAL",
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-p",
+        "tcp",
+        "--dport",
+        str(PROXY_PORT),
+        "-m",
+        "addrtype",
+        "--dst-type",
+        "LOCAL",
+        "-j",
+        "ACCEPT",
     )
 
     # Permit DNS queries to mitmproxy's DNS mode listener.  Direct queries to
     # remote DNS servers are redirected here by NAT before this filter runs.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-p",
-            "udp",
-            "--dport",
-            str(DNS_PORT),
-            "-m",
-            "addrtype",
-            "--dst-type",
-            "LOCAL",
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-p",
+        "udp",
+        "--dport",
+        str(DNS_PORT),
+        "-m",
+        "addrtype",
+        "--dst-type",
+        "LOCAL",
+        "-j",
+        "ACCEPT",
     )
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-p",
-            "tcp",
-            "--dport",
-            str(DNS_PORT),
-            "-m",
-            "addrtype",
-            "--dst-type",
-            "LOCAL",
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-p",
+        "tcp",
+        "--dport",
+        str(DNS_PORT),
+        "-m",
+        "addrtype",
+        "--dst-type",
+        "LOCAL",
+        "-j",
+        "ACCEPT",
     )
 
     # Permit access to the mitmweb UI only on this machine.  As above, requiring a
     # LOCAL destination avoids allowing arbitrary outbound connections to remote
     # services listening on the web UI port number.
-    _ = run_xtables(
-        table_cmd,
-        [
-            "-t",
-            "filter",
-            "-A",
-            CHAIN,
-            "-p",
-            "tcp",
-            "--dport",
-            str(WEB_PORT),
-            "-m",
-            "addrtype",
-            "--dst-type",
-            "LOCAL",
-            "-j",
-            "ACCEPT",
-        ],
+    append_output(
+        "-p",
+        "tcp",
+        "--dport",
+        str(WEB_PORT),
+        "-m",
+        "addrtype",
+        "--dst-type",
+        "LOCAL",
+        "-j",
+        "ACCEPT",
     )
 
     # Fail closed: anything not explicitly allowed above is a new outbound
     # connection attempt that would bypass the transparent proxy, so drop it.
-    _ = run_xtables(
-        table_cmd, ["-t", "filter", "-A", CHAIN, "-j", "DROP"]
-    )
+    append_output("-j", "DROP")
 
     # Reattach at the head on every start.  An earlier terminal rule in OUTPUT
     # would otherwise bypass the fail-closed managed chain.
-    place_rule_first(table_cmd, "filter", "OUTPUT", ["-j", CHAIN])
+    firewall.ensure_first(Rule("filter", "OUTPUT", ("-j", CHAIN)))
 
 
-def remove_output_filter(table_cmd: str) -> None:
+def remove_output_filter(firewall: Iptables) -> None:
     """
     Remove the outbound allowlist/blocklist chain installed by the "start" action.
     That chain allows reply-direction established/related packets so inbound
@@ -1154,28 +904,12 @@ def remove_output_filter(table_cmd: str) -> None:
     and blocks all other outbound traffic.
     """
 
-    existing_chain = probe_xtables(
-        table_cmd,
-        ["-t", "filter", "-L", CHAIN],
-        CHAIN_ABSENT_ERROR,
-    )
-    if existing_chain is None:
+    if not firewall.chain_exists("filter", CHAIN):
         return
 
-    while True:
-        existing_jump = probe_xtables(
-            table_cmd,
-            ["-t", "filter", "-C", "OUTPUT", "-j", CHAIN],
-            RULE_ABSENT_ERROR,
-        )
-        if existing_jump is None:
-            break
-        _ = run_xtables(
-            table_cmd, ["-t", "filter", "-D", "OUTPUT", "-j", CHAIN]
-        )
-
-    _ = run_xtables(table_cmd, ["-t", "filter", "-F", CHAIN])
-    _ = run_xtables(table_cmd, ["-t", "filter", "-X", CHAIN])
+    firewall.remove_all(Rule("filter", "OUTPUT", ("-j", CHAIN)))
+    firewall.flush_chain("filter", CHAIN)
+    firewall.delete_chain("filter", CHAIN)
 
 
 def ensure_web_rules_file() -> None:
@@ -1224,23 +958,20 @@ def add_rules(
 
     # Every managed NAT rule is moved to the head.  Install generic redirects
     # first, then bypasses, so bypasses retain their required higher precedence.
-    add_dns_redirect_rule("iptables", "udp", bypass_users)
-    add_dns_redirect_rule("iptables", "tcp", bypass_users)
-    add_dns_redirect_rule("ip6tables", "udp", bypass_users)
-    add_dns_redirect_rule("ip6tables", "tcp", bypass_users)
+    for firewall in FIREWALLS:
+        for protocol in ("udp", "tcp"):
+            add_dns_redirect_rule(firewall, protocol, bypass_users)
 
-    add_redirect_rule("iptables", 80, bypass_users)
-    add_redirect_rule("iptables", 443, bypass_users)
-    add_redirect_rule("ip6tables", 80, bypass_users)
-    add_redirect_rule("ip6tables", 443, bypass_users)
+    for firewall in FIREWALLS:
+        for port in (80, 443):
+            add_redirect_rule(firewall, port, bypass_users)
 
-    add_ntp_dns_bypass_rule("iptables", "udp")
-    add_ntp_dns_bypass_rule("iptables", "tcp")
-    add_ntp_dns_bypass_rule("ip6tables", "udp")
-    add_ntp_dns_bypass_rule("ip6tables", "tcp")
+    for firewall in FIREWALLS:
+        for protocol in ("udp", "tcp"):
+            add_ntp_dns_bypass_rule(firewall, protocol)
 
-    add_output_filter("iptables", bypass_users)
-    add_output_filter("ip6tables", bypass_users)
+    for firewall in FIREWALLS:
+        add_output_filter(firewall, bypass_users)
 
     add_custom_rules(custom_rules)
 
@@ -1251,26 +982,16 @@ def clear_rules() -> None:
     """
 
     clear_managed_redirect_rules()
-    clear_legacy_redirect_rules(probe_xtables, run_xtables)
+    clear_legacy_redirect_rules(FIREWALLS)
     clear_custom_rules()
 
-    remove_redirect_rule("iptables", 80)
-    remove_redirect_rule("iptables", 443)
-    remove_redirect_rule("ip6tables", 80)
-    remove_redirect_rule("ip6tables", 443)
-
-    remove_ntp_dns_bypass_rule("iptables", "udp")
-    remove_ntp_dns_bypass_rule("iptables", "tcp")
-    remove_ntp_dns_bypass_rule("ip6tables", "udp")
-    remove_ntp_dns_bypass_rule("ip6tables", "tcp")
-
-    remove_dns_redirect_rule("iptables", "udp")
-    remove_dns_redirect_rule("iptables", "tcp")
-    remove_dns_redirect_rule("ip6tables", "udp")
-    remove_dns_redirect_rule("ip6tables", "tcp")
-
-    remove_output_filter("iptables")
-    remove_output_filter("ip6tables")
+    for firewall in FIREWALLS:
+        for port in (80, 443):
+            remove_redirect_rule(firewall, port)
+        for protocol in ("udp", "tcp"):
+            remove_ntp_dns_bypass_rule(firewall, protocol)
+            remove_dns_redirect_rule(firewall, protocol)
+        remove_output_filter(firewall)
 
 
 # ---------------------------------------------------------------------------
@@ -1286,7 +1007,7 @@ def load_config(config_path: Path) -> dict[str, object]:
     if not config_path.exists():
         return {}
     with config_path.open("rb") as file:
-        config_value = cast(object, tomllib.load(file))
+        config_value: object = tomllib.load(file)
     if not is_toml_table(config_value):
         return {}
     return config_value
@@ -1300,11 +1021,11 @@ def parse_bypass_users(config_path: Path = ADDON_CONFIG_FILE) -> tuple[str, ...]
     config_value = load_config(config_path)
     value = config_value.get("bypass_users", [])
     error_prefix = f"invalid bypass user configuration in {config_path}: "
-    if not isinstance(value, list):
+    if not is_toml_array(value):
         raise ValueError(error_prefix + "'bypass_users' must be an array of strings")
 
     users: list[str] = []
-    for index, user_value in enumerate(cast(list[object], value), start=1):
+    for index, user_value in enumerate(value, start=1):
         if not isinstance(user_value, str) or not user_value:
             raise ValueError(
                 error_prefix + f"'bypass_users' entry {index} must be a non-empty string"
@@ -1343,14 +1064,13 @@ def parse_custom_rules(config_path: Path = ADDON_CONFIG_FILE) -> list[CustomRule
         return []
 
     bypass_value = iptables_value["bypass"]
-    if not isinstance(bypass_value, list):
+    if not is_toml_array(bypass_value):
         raise ValueError(
             error_prefix + "'iptables.bypass' must be an array of tables"
         )
 
-    bypass_rules = cast(list[object], bypass_value)
     rules: list[CustomRule] = []
-    for index, rule in enumerate(bypass_rules, start=1):
+    for index, rule in enumerate(bypass_value, start=1):
         entry = f"[[iptables.bypass]] entry {index}"
         if not is_toml_table(rule):
             raise ValueError(error_prefix + f"{entry} must be a table")
@@ -1373,28 +1093,28 @@ def parse_custom_rules(config_path: Path = ADDON_CONFIG_FILE) -> list[CustomRule
                 + f"{entry} 'port' must be an integer from 1 to 65535"
             )
 
-        table_cmd: Literal["iptables", "ip6tables"]
+        table_cmd: IptablesCommand
         table_cmd = "iptables" if parsed_network.version == 4 else "ip6tables"
         rules.append(CustomRule(table_cmd, str(parsed_network), port))
 
     return rules
 
 
-def find_drop_line_number(result: subprocess.CompletedProcess[str]) -> str | None:
+def find_drop_line_number(lines: tuple[str, ...]) -> int | None:
     """
     Find the line number of the DROP rule in iptables --line-numbers output.
 
-    Returns the line number as a string, or None if no DROP rule is found.
+    Returns the line number, or None if no DROP rule is found.
     """
 
-    for line in result.stdout.splitlines():
+    for line in lines:
         parts = line.split()
         if len(parts) >= 2 and parts[1] == "DROP":
-            return parts[0]
+            return int(parts[0])
     return None
 
 
-def add_rule(table_cmd: str, chain: str, network: str, port: int) -> None:
+def add_rule(firewall: Iptables, chain: str, network: str, port: int) -> None:
     """
     Insert a single custom ACCEPT rule into the given chain before the DROP rule.
 
@@ -1403,56 +1123,16 @@ def add_rule(table_cmd: str, chain: str, network: str, port: int) -> None:
     rule is appended.
     """
 
-    rule_args = [
-        "-t",
-        "filter",
-        "-L",
-        chain,
-        "--line-numbers",
-    ]
-    result = probe_xtables(table_cmd, rule_args, CHAIN_ABSENT_ERROR)
-    if result is None:
+    lines = firewall.list_rules("filter", chain, line_numbers=True)
+    if lines is None:
         return
 
-    drop_line = find_drop_line_number(result)
+    drop_line = find_drop_line_number(lines)
 
-    custom_rule = [
-        "-p",
-        "tcp",
-        "-d",
-        network,
-        "--dport",
-        str(port),
-        "-m",
-        "comment",
-        "--comment",
-        COMMENT,
-        "-j",
-        "ACCEPT",
-    ]
-
-    if drop_line is not None:
-        _ = run_xtables(
-            table_cmd,
-            ["-t", "filter", "-I", chain, drop_line, *custom_rule],
-        )
-    else:
-        _ = run_xtables(
-            table_cmd, ["-t", "filter", "-A", chain, *custom_rule]
-        )
-
-
-def add_nat_bypass_rule(table_cmd: str, network: str, port: int) -> None:
-    """
-    Insert a NAT bypass rule at the top of the OUTPUT chain so traffic to the
-    specified network and port is not redirected to the transparent proxy.
-    """
-
-    place_rule_first(
-        table_cmd,
-        "nat",
-        "OUTPUT",
-        [
+    custom_rule = Rule(
+        "filter",
+        chain,
+        (
             "-p",
             "tcp",
             "-d",
@@ -1465,7 +1145,40 @@ def add_nat_bypass_rule(table_cmd: str, network: str, port: int) -> None:
             COMMENT,
             "-j",
             "ACCEPT",
-        ],
+        ),
+    )
+
+    if drop_line is not None:
+        firewall.insert(custom_rule, drop_line)
+    else:
+        firewall.append(custom_rule)
+
+
+def add_nat_bypass_rule(firewall: Iptables, network: str, port: int) -> None:
+    """
+    Insert a NAT bypass rule at the top of the OUTPUT chain so traffic to the
+    specified network and port is not redirected to the transparent proxy.
+    """
+
+    firewall.ensure_first(
+        Rule(
+            "nat",
+            "OUTPUT",
+            (
+                "-p",
+                "tcp",
+                "-d",
+                network,
+                "--dport",
+                str(port),
+                "-m",
+                "comment",
+                "--comment",
+                COMMENT,
+                "-j",
+                "ACCEPT",
+            ),
+        )
     )
 
 
@@ -1485,11 +1198,12 @@ def add_custom_rules(rules: list[CustomRule] | None = None) -> None:
         return
 
     for rule in rules:
-        add_nat_bypass_rule(rule.table_cmd, rule.network, rule.port)
-        add_rule(rule.table_cmd, CHAIN, rule.network, rule.port)
+        firewall = firewall_for(rule.table_cmd)
+        add_nat_bypass_rule(firewall, rule.network, rule.port)
+        add_rule(firewall, CHAIN, rule.network, rule.port)
 
 
-def remove_comment_rules(table_cmd: str, table: str, chain: str) -> None:
+def remove_comment_rules(firewall: Iptables, table: Table, chain: str) -> None:
     """
     Remove all rules tagged with the mitmwall-custom comment from a chain.
 
@@ -1497,28 +1211,7 @@ def remove_comment_rules(table_cmd: str, table: str, chain: str) -> None:
     shifts the line numbers of the remaining rules.
     """
 
-    while True:
-        result = probe_xtables(
-            table_cmd,
-            ["-t", table, "-L", chain, "--line-numbers"],
-            CHAIN_ABSENT_ERROR,
-        )
-        if result is None:
-            break
-
-        removed = False
-        for line in result.stdout.splitlines():
-            if COMMENT in line:
-                parts = line.split()
-                if parts and parts[0].isdigit():
-                    _ = run_xtables(
-                        table_cmd, ["-t", table, "-D", chain, parts[0]]
-                    )
-                    removed = True
-                    break
-
-        if not removed:
-            break
+    firewall.remove_by_comment(table, chain, COMMENT)
 
 
 def clear_managed_redirect_rules() -> None:
@@ -1526,35 +1219,16 @@ def clear_managed_redirect_rules() -> None:
     Remove all tagged web and DNS redirects, including stale user combinations.
     """
 
-    for table_cmd in ("iptables", "ip6tables"):
-        while True:
-            result = probe_xtables(
-                table_cmd,
-                ["-t", "nat", "-L", "OUTPUT", "--line-numbers"],
-                CHAIN_ABSENT_ERROR,
-            )
-            if result is None:
-                break
-            removed = False
-            for line in result.stdout.splitlines():
-                if REDIRECT_COMMENT in line:
-                    parts = line.split()
-                    if parts and parts[0].isdigit():
-                        _ = run_xtables(
-                            table_cmd, ["-t", "nat", "-D", "OUTPUT", parts[0]]
-                        )
-                        removed = True
-                        break
-            if not removed:
-                break
+    for firewall in FIREWALLS:
+        firewall.remove_by_comment("nat", "OUTPUT", REDIRECT_COMMENT)
 
 
-def remove_custom_rules_from_chain(table_cmd: str, chain: str) -> None:
+def remove_custom_rules_from_chain(firewall: Iptables, chain: str) -> None:
     """
     Remove all rules tagged with the mitmwall-custom comment from a filter chain.
     """
 
-    remove_comment_rules(table_cmd, "filter", chain)
+    remove_comment_rules(firewall, "filter", chain)
 
 
 def clear_custom_rules() -> None:
@@ -1562,10 +1236,9 @@ def clear_custom_rules() -> None:
     Remove all custom bypass rules previously inserted by add_custom_rules().
     """
 
-    remove_comment_rules("iptables", "filter", CHAIN)
-    remove_comment_rules("ip6tables", "filter", CHAIN)
-    remove_comment_rules("iptables", "nat", "OUTPUT")
-    remove_comment_rules("ip6tables", "nat", "OUTPUT")
+    for firewall in FIREWALLS:
+        remove_comment_rules(firewall, "filter", CHAIN)
+        remove_comment_rules(firewall, "nat", "OUTPUT")
 
 
 def usage() -> None:
@@ -1592,7 +1265,7 @@ def main() -> None:
         custom_rules = parse_custom_rules()
         bypass_users = parse_bypass_users()
         try:
-            run_startup_migrations(probe_xtables, run_xtables)
+            run_startup_migrations(FIREWALLS)
             configure_system_resolver()
             ensure_web_rules_file()
             add_rules(custom_rules, bypass_users)

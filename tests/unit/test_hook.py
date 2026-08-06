@@ -7,9 +7,10 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
-from unittest.mock import ANY, MagicMock, call, patch
+from unittest.mock import MagicMock, call, patch
 
-from src.systemd import hook, migrations, resolv_conf as resolver
+from src.systemd import hook, iptables, migrations, resolv_conf as resolver
+from src.systemd.iptables import Iptables, Rule
 
 
 class ParseCustomRulesTests(unittest.TestCase):
@@ -209,8 +210,7 @@ num  target     prot opt source               destination
 2    ACCEPT     all  --  anywhere             anywhere             owner UID match root
 3    DROP       all  --  anywhere             anywhere
 """
-        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
-        self.assertEqual(hook.find_drop_line_number(result), "3")
+        self.assertEqual(hook.find_drop_line_number(tuple(stdout.splitlines())), 3)
 
     def test_returns_none_when_no_drop(self) -> None:
         """
@@ -221,8 +221,7 @@ num  target     prot opt source               destination
 num  target     prot opt source               destination
 1    ACCEPT     all  --  anywhere             anywhere
 """
-        result = subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout)
-        self.assertIsNone(hook.find_drop_line_number(result))
+        self.assertIsNone(hook.find_drop_line_number(tuple(stdout.splitlines())))
 
 
 class XtablesCommandTests(unittest.TestCase):
@@ -230,7 +229,7 @@ class XtablesCommandTests(unittest.TestCase):
     Verify centralized xtables locking and probe error classification.
     """
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_ipv4_and_ipv6_commands_wait_for_xtables_lock(
         self, mock_run: MagicMock
     ) -> None:
@@ -243,7 +242,7 @@ class XtablesCommandTests(unittest.TestCase):
         )
 
         for table_cmd in ("iptables", "ip6tables"):
-            _ = hook.run_xtables(table_cmd, ["-t", "filter", "-L", "OUTPUT"])
+            _ = Iptables(table_cmd).run(["-t", "filter", "-L", "OUTPUT"])
 
         commands = [invocation.args[0] for invocation in mock_run.call_args_list]
         self.assertEqual(
@@ -260,7 +259,7 @@ class XtablesCommandTests(unittest.TestCase):
             )
         )
 
-    @patch("src.systemd.hook.run_xtables")
+    @patch("src.systemd.iptables.Iptables.run")
     def test_expected_rule_and_chain_absence_is_idempotent(
         self, mock_run: MagicMock
     ) -> None:
@@ -268,7 +267,10 @@ class XtablesCommandTests(unittest.TestCase):
         Canonical missing-rule and missing-chain probe results return None.
         """
 
-        for absence_error in (hook.RULE_ABSENT_ERROR, hook.CHAIN_ABSENT_ERROR):
+        for absence_error in (
+            iptables.RULE_ABSENT_ERROR,
+            iptables.CHAIN_ABSENT_ERROR,
+        ):
             with self.subTest(absence_error=absence_error):
                 mock_run.return_value = subprocess.CompletedProcess(
                     args=["iptables"],
@@ -278,10 +280,10 @@ class XtablesCommandTests(unittest.TestCase):
                 )
 
                 self.assertIsNone(
-                    hook.probe_xtables("iptables", ["probe"], absence_error)
+                    Iptables("iptables").probe(["probe"], absence_error)
                 )
 
-    @patch("src.systemd.hook.run_xtables")
+    @patch("src.systemd.iptables.Iptables.run")
     def test_probe_raises_unexpected_operational_errors(
         self, mock_run: MagicMock
     ) -> None:
@@ -306,13 +308,12 @@ class XtablesCommandTests(unittest.TestCase):
                 )
 
                 with self.assertRaises(subprocess.CalledProcessError):
-                    _ = hook.probe_xtables(
-                        "iptables",
+                    _ = Iptables("iptables").probe(
                         ["-t", "filter", "-C", "OUTPUT"],
-                        hook.RULE_ABSENT_ERROR,
+                        iptables.RULE_ABSENT_ERROR,
                     )
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_cleanup_probe_error_propagates(self, mock_run: MagicMock) -> None:
         """
         Cleanup raises instead of reporting success after an operational error.
@@ -326,7 +327,7 @@ class XtablesCommandTests(unittest.TestCase):
         )
 
         with self.assertRaises(subprocess.CalledProcessError):
-            hook.remove_redirect_rule("iptables", 443)
+            hook.remove_redirect_rule(Iptables("iptables"), 443)
 
 
 class ForwardingStateTests(unittest.TestCase):
@@ -531,7 +532,7 @@ class ForwardingStateTests(unittest.TestCase):
                 self.assertTrue(state_file.exists())
                 mock_remove.assert_not_called()
 
-    @patch("src.systemd.hook.place_rule_first")
+    @patch.object(hook.IPV4, "ensure_first")
     def test_guards_only_newly_enabled_address_families(
         self, mock_place: MagicMock
     ) -> None:
@@ -542,7 +543,7 @@ class ForwardingStateTests(unittest.TestCase):
         hook.add_forwarding_guards(hook.ForwardingState(0, 1, 1))
 
         mock_place.assert_called_once_with(
-            "iptables", "filter", "FORWARD", hook.forward_guard_rule()
+            Rule("filter", "FORWARD", tuple(hook.forward_guard_rule()))
         )
 
     def test_snapshot_permissions_are_root_only(self) -> None:
@@ -568,7 +569,7 @@ class PlaceRuleFirstTests(unittest.TestCase):
     Verify managed entry points are repaired at the head of built-in chains.
     """
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_repositions_existing_ipv4_and_ipv6_rules(
         self, mock_run: MagicMock
     ) -> None:
@@ -584,12 +585,14 @@ class PlaceRuleFirstTests(unittest.TestCase):
                     subprocess.CompletedProcess(args=[], returncode=0),
                     subprocess.CompletedProcess(args=[], returncode=0),
                     subprocess.CompletedProcess(
-                        args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+                        args=[], returncode=1, stderr=iptables.RULE_ABSENT_ERROR
                     ),
                     subprocess.CompletedProcess(args=[], returncode=0),
                 ]
 
-                hook.place_rule_first(table_cmd, "filter", "OUTPUT", rule)
+                Iptables(table_cmd).ensure_first(
+                    Rule("filter", "OUTPUT", tuple(rule))
+                )
 
                 self.assertEqual(
                     [item.args[0] for item in mock_run.call_args_list],
@@ -638,7 +641,7 @@ class PlaceRuleFirstTests(unittest.TestCase):
                     ],
                 )
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_removes_duplicate_rules_before_inserting_one(
         self, mock_run: MagicMock
     ) -> None:
@@ -652,12 +655,14 @@ class PlaceRuleFirstTests(unittest.TestCase):
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(
-                args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+                args=[], returncode=1, stderr=iptables.RULE_ABSENT_ERROR
             ),
             subprocess.CompletedProcess(args=[], returncode=0),
         ]
 
-        hook.place_rule_first("iptables", "nat", "OUTPUT", ["-j", "REDIRECT"])
+        Iptables("iptables").ensure_first(
+            Rule("nat", "OUTPUT", ("-j", "REDIRECT"))
+        )
 
         commands = [
             cast(list[str], item.args[0]) for item in mock_run.call_args_list
@@ -680,20 +685,20 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
         IPv4 and IPv6 web and DNS signatures from prior releases are removed.
         """
 
-        migrations.clear_legacy_redirect_rules(MagicMock(), MagicMock())
+        ipv4 = MagicMock(spec=Iptables)
+        ipv6 = MagicMock(spec=Iptables)
+        migrations.clear_legacy_redirect_rules((ipv4, ipv6))
 
         self.assertEqual(mock_remove.call_count, 24)
-        for table_cmd in ("iptables", "ip6tables"):
+        for firewall in (ipv4, ipv6):
             mock_remove.assert_any_call(
-                table_cmd,
+                firewall,
                 migrations.legacy_redirect_rule_args(
                     "tcp", 80, migrations.PROXY_PORT, (migrations.USER,)
                 ),
-                ANY,
-                ANY,
             )
             mock_remove.assert_any_call(
-                table_cmd,
+                firewall,
                 migrations.legacy_redirect_rule_args(
                     "tcp",
                     443,
@@ -701,20 +706,16 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
                     ("0", migrations.USER),
                     exclude_loopback=True,
                 ),
-                ANY,
-                ANY,
             )
             for protocol in ("udp", "tcp"):
                 mock_remove.assert_any_call(
-                    table_cmd,
+                    firewall,
                     migrations.legacy_redirect_rule_args(
                         protocol,
                         53,
                         migrations.DNS_PORT,
                         ("0", migrations.USER, "systemd-resolve"),
                     ),
-                    ANY,
-                    ANY,
                 )
 
     @patch("src.systemd.migrations.remove_legacy_rule_copies")
@@ -725,7 +726,9 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
         Migration removes the final untagged forms that included the APT user.
         """
 
-        migrations.clear_legacy_redirect_rules(MagicMock(), MagicMock())
+        migrations.clear_legacy_redirect_rules(
+            (MagicMock(spec=Iptables), MagicMock(spec=Iptables))
+        )
 
         removed_rules = [
             cast(list[str], invocation.args[1])
@@ -734,7 +737,7 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
         self.assertTrue(removed_rules)
         self.assertTrue(any(migrations.APT_USER in rule for rule in removed_rules))
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_removes_every_copy_by_exact_rule_syntax(
         self, mock_run: MagicMock
     ) -> None:
@@ -748,7 +751,7 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(args=[], returncode=0),
             subprocess.CompletedProcess(
-                args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+                args=[], returncode=1, stderr=iptables.RULE_ABSENT_ERROR
             ),
         ]
         rule = migrations.legacy_redirect_rule_args(
@@ -759,9 +762,7 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
             exclude_loopback=True,
         )
 
-        migrations.remove_legacy_rule_copies(
-            "iptables", rule, hook.probe_xtables, hook.run_xtables
-        )
+        migrations.remove_legacy_rule_copies(Iptables("iptables"), rule)
 
         commands = [invocation.args[0] for invocation in mock_run.call_args_list]
         delete_command = [
@@ -793,9 +794,9 @@ class OutputFilterConntrackTests(unittest.TestCase):
     Verify the OUTPUT filter's conntrack direction restriction.
     """
 
-    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.iptables.Iptables.ensure_first")
     @patch("src.systemd.hook.add_ntp_filter_rules")
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_first_accept_rule_only_allows_reply_direction(
         self, mock_run: MagicMock, _mock_ntp: MagicMock, mock_place: MagicMock
     ) -> None:
@@ -805,7 +806,7 @@ class OutputFilterConntrackTests(unittest.TestCase):
 
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
-        hook.add_output_filter("iptables")
+        hook.add_output_filter(Iptables("iptables"))
 
         commands = [call[0][0] for call in mock_run.call_args_list]
         self.assertEqual(commands[2], [
@@ -844,7 +845,7 @@ class OutputFilterConntrackTests(unittest.TestCase):
             commands,
         )
         mock_place.assert_called_once_with(
-            "iptables", "filter", "OUTPUT", ["-j", hook.CHAIN]
+            Rule("filter", "OUTPUT", ("-j", hook.CHAIN))
         )
 
 
@@ -853,9 +854,9 @@ class OutputFilterIPv6ControlPlaneTests(unittest.TestCase):
     Verify that only IPv6 receives the control-plane protocol allowance.
     """
 
-    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.iptables.Iptables.ensure_first")
     @patch("src.systemd.hook.add_ntp_filter_rules")
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_allows_icmpv6_before_drop(
         self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
     ) -> None:
@@ -865,7 +866,7 @@ class OutputFilterIPv6ControlPlaneTests(unittest.TestCase):
 
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
-        hook.add_output_filter("ip6tables")
+        hook.add_output_filter(Iptables("ip6tables"))
 
         commands = [
             cast(list[str], invocation.args[0])
@@ -898,9 +899,9 @@ class OutputFilterIPv6ControlPlaneTests(unittest.TestCase):
         self.assertEqual(commands.count(icmpv6_rule), 1)
         self.assertLess(commands.index(icmpv6_rule), commands.index(drop_rule))
 
-    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.iptables.Iptables.ensure_first")
     @patch("src.systemd.hook.add_ntp_filter_rules")
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_ipv4_has_no_corresponding_protocol_allowance(
         self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
     ) -> None:
@@ -910,7 +911,7 @@ class OutputFilterIPv6ControlPlaneTests(unittest.TestCase):
 
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
-        hook.add_output_filter("iptables")
+        hook.add_output_filter(Iptables("iptables"))
 
         commands = [
             cast(list[str], invocation.args[0])
@@ -931,7 +932,7 @@ class AddRuleTests(unittest.TestCase):
     Verify add_rule inserts custom rules into an iptables chain.
     """
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_inserts_before_drop(self, mock_run: MagicMock) -> None:
         """
         The rule is inserted before the DROP rule when one exists.
@@ -944,7 +945,9 @@ class AddRuleTests(unittest.TestCase):
         )
         mock_run.return_value = list_result
 
-        hook.add_rule("iptables", "MITMWALL_OUTPUT", "10.0.0.0/8", 9090)
+        hook.add_rule(
+            Iptables("iptables"), "MITMWALL_OUTPUT", "10.0.0.0/8", 9090
+        )
 
         calls = mock_run.call_args_list
         self.assertEqual(calls[-1][0][0], [
@@ -970,7 +973,7 @@ class AddRuleTests(unittest.TestCase):
             "ACCEPT",
         ])
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_appends_when_no_drop(self, mock_run: MagicMock) -> None:
         """
         The rule is appended when no DROP rule is found.
@@ -983,7 +986,9 @@ class AddRuleTests(unittest.TestCase):
         )
         mock_run.return_value = list_result
 
-        hook.add_rule("iptables", "MITMWALL_OUTPUT", "10.0.0.0/8", 9090)
+        hook.add_rule(
+            Iptables("iptables"), "MITMWALL_OUTPUT", "10.0.0.0/8", 9090
+        )
 
         calls = mock_run.call_args_list
         self.assertEqual(calls[-1][0][0], [
@@ -1014,7 +1019,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
     Verify removal of custom rules from an iptables chain.
     """
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_removes_rules_with_comment(self, mock_run: MagicMock) -> None:
         """
         Rules tagged with the mitmwall-custom comment are removed by line number.
@@ -1030,7 +1035,9 @@ class RemoveCustomRulesTests(unittest.TestCase):
 
         mock_run.side_effect = [list_result, delete_result, empty_list]
 
-        hook.remove_custom_rules_from_chain("iptables", "MITMWALL_OUTPUT")
+        hook.remove_custom_rules_from_chain(
+            Iptables("iptables"), "MITMWALL_OUTPUT"
+        )
 
         delete_call = mock_run.call_args_list[1]
         self.assertEqual(delete_call[0][0], [
@@ -1044,7 +1051,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
             "1",
         ])
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_handles_missing_chain(self, mock_run: MagicMock) -> None:
         """
         Removal stops gracefully when the chain does not exist.
@@ -1053,10 +1060,12 @@ class RemoveCustomRulesTests(unittest.TestCase):
         mock_run.return_value = subprocess.CompletedProcess(
             args=[],
             returncode=1,
-            stderr=hook.CHAIN_ABSENT_ERROR,
+            stderr=iptables.CHAIN_ABSENT_ERROR,
         )
 
-        hook.remove_custom_rules_from_chain("iptables", "MITMWALL_OUTPUT")
+        hook.remove_custom_rules_from_chain(
+            Iptables("iptables"), "MITMWALL_OUTPUT"
+        )
 
         self.assertEqual(mock_run.call_count, 1)
 
@@ -1066,19 +1075,20 @@ class AddNatBypassRuleTests(unittest.TestCase):
     Verify add_nat_bypass_rule inserts NAT bypass rules into the OUTPUT chain.
     """
 
-    @patch("src.systemd.hook.place_rule_first")
-    def test_places_rule_at_top(self, mock_place: MagicMock) -> None:
+    def test_places_rule_at_top(self) -> None:
         """
         The NAT bypass uses the managed head-placement operation.
         """
 
-        hook.add_nat_bypass_rule("iptables", "10.0.0.0/8", 443)
+        firewall = Iptables("iptables")
+        with patch.object(firewall, "ensure_first") as mock_ensure:
+            hook.add_nat_bypass_rule(firewall, "10.0.0.0/8", 443)
 
-        mock_place.assert_called_once_with(
-            "iptables",
-            "nat",
-            "OUTPUT",
-            [
+        mock_ensure.assert_called_once_with(
+            Rule(
+                "nat",
+                "OUTPUT",
+                (
                 "-p",
                 "tcp",
                 "-d",
@@ -1091,7 +1101,8 @@ class AddNatBypassRuleTests(unittest.TestCase):
                 "mitmwall-custom",
                 "-j",
                 "ACCEPT",
-            ],
+                ),
+            )
         )
 
 
@@ -1100,25 +1111,22 @@ class ManagedNatOrderingTests(unittest.TestCase):
     Verify core redirects and bypasses use the required NAT precedence.
     """
 
-    @patch("src.systemd.hook.place_rule_first")
-    def test_core_redirects_are_placed_first_for_ipv4_and_ipv6(
-        self, mock_place: MagicMock
-    ) -> None:
+    def test_core_redirects_are_placed_first_for_ipv4_and_ipv6(self) -> None:
         """
         IPv4 and IPv6 HTTP and DNS redirects are managed at the OUTPUT head.
         """
 
-        for table_cmd in ("iptables", "ip6tables"):
-            hook.add_redirect_rule(table_cmd, 443)
-            hook.add_dns_redirect_rule(table_cmd, "udp")
+        firewalls = (Iptables("iptables"), Iptables("ip6tables"))
+        for firewall in firewalls:
+            rules: list[Rule] = []
+            with patch.object(firewall, "ensure_first", side_effect=rules.append):
+                hook.add_redirect_rule(firewall, 443)
+                hook.add_dns_redirect_rule(firewall, "udp")
 
-        self.assertEqual(mock_place.call_count, 4)
-        for invocation in mock_place.call_args_list:
-            self.assertEqual(invocation.args[1:3], ("nat", "OUTPUT"))
-        self.assertEqual(
-            [invocation.args[0] for invocation in mock_place.call_args_list],
-            ["iptables", "iptables", "ip6tables", "ip6tables"],
-        )
+            self.assertEqual(len(rules), 2)
+            for rule in rules:
+                self.assertEqual(rule.table, "nat")
+                self.assertEqual(rule.chain, "OUTPUT")
 
     def test_bypasses_are_installed_after_generic_redirects(self) -> None:
         """
@@ -1150,24 +1158,26 @@ class ManagedNatOrderingTests(unittest.TestCase):
             str(invocation)
             for invocation in cast(list[object], manager.mock_calls)
         ]
+        ipv4 = repr(hook.IPV4)
+        ipv6 = repr(hook.IPV6)
         self.assertEqual(
             actual_calls,
             [
                 "call.forwarding()",
-                "call.dns('iptables', 'udp', ())",
-                "call.dns('iptables', 'tcp', ())",
-                "call.dns('ip6tables', 'udp', ())",
-                "call.dns('ip6tables', 'tcp', ())",
-                "call.web('iptables', 80, ())",
-                "call.web('iptables', 443, ())",
-                "call.web('ip6tables', 80, ())",
-                "call.web('ip6tables', 443, ())",
-                "call.ntp('iptables', 'udp')",
-                "call.ntp('iptables', 'tcp')",
-                "call.ntp('ip6tables', 'udp')",
-                "call.ntp('ip6tables', 'tcp')",
-                "call.filter('iptables', ())",
-                "call.filter('ip6tables', ())",
+                f"call.dns({ipv4}, 'udp', ())",
+                f"call.dns({ipv4}, 'tcp', ())",
+                f"call.dns({ipv6}, 'udp', ())",
+                f"call.dns({ipv6}, 'tcp', ())",
+                f"call.web({ipv4}, 80, ())",
+                f"call.web({ipv4}, 443, ())",
+                f"call.web({ipv6}, 80, ())",
+                f"call.web({ipv6}, 443, ())",
+                f"call.ntp({ipv4}, 'udp')",
+                f"call.ntp({ipv4}, 'tcp')",
+                f"call.ntp({ipv6}, 'udp')",
+                f"call.ntp({ipv6}, 'tcp')",
+                f"call.filter({ipv4}, ())",
+                f"call.filter({ipv6}, ())",
                 "call.custom([])",
             ],
         )
@@ -1183,13 +1193,11 @@ class ManagedNatOrderingTests(unittest.TestCase):
                 side_effect=ValueError("invalid custom firewall configuration"),
             ),
             patch("src.systemd.hook.enable_forwarding") as mock_forwarding,
-            patch("src.systemd.hook.run_xtables") as mock_xtables,
         ):
             with self.assertRaisesRegex(ValueError, "invalid custom firewall"):
                 hook.add_rules()
 
         mock_forwarding.assert_not_called()
-        mock_xtables.assert_not_called()
 
 
 class AptSandboxBypassTests(unittest.TestCase):
@@ -1197,17 +1205,17 @@ class AptSandboxBypassTests(unittest.TestCase):
     Verify that APT's sandbox user retains root-invoked network access.
     """
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_http_redirect_excludes_apt_user(self, mock_run: MagicMock) -> None:
         """
         HTTP traffic owned by _apt is not redirected into the proxy.
         """
 
         mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+            args=[], returncode=1, stderr=iptables.RULE_ABSENT_ERROR
         )
 
-        hook.add_redirect_rule("iptables", 80)
+        hook.add_redirect_rule(Iptables("iptables"), 80)
 
         command = cast(list[str], mock_run.call_args_list[-1][0][0])
         apt_index = command.index(hook.APT_USER)
@@ -1216,17 +1224,17 @@ class AptSandboxBypassTests(unittest.TestCase):
             ["-m", "owner", "!", "--uid-owner", hook.APT_USER],
         )
 
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_dns_redirect_excludes_apt_user(self, mock_run: MagicMock) -> None:
         """
         DNS traffic owned by _apt is not redirected into the DNS proxy.
         """
 
         mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
+            args=[], returncode=1, stderr=iptables.RULE_ABSENT_ERROR
         )
 
-        hook.add_dns_redirect_rule("iptables", "udp")
+        hook.add_dns_redirect_rule(Iptables("iptables"), "udp")
 
         command = cast(list[str], mock_run.call_args_list[-1][0][0])
         apt_index = command.index(hook.APT_USER)
@@ -1235,9 +1243,9 @@ class AptSandboxBypassTests(unittest.TestCase):
             ["-m", "owner", "!", "--uid-owner", hook.APT_USER],
         )
 
-    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.iptables.Iptables.ensure_first")
     @patch("src.systemd.hook.add_ntp_filter_rules")
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_output_filter_allows_apt_user(
         self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
     ) -> None:
@@ -1247,7 +1255,7 @@ class AptSandboxBypassTests(unittest.TestCase):
 
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
-        hook.add_output_filter("iptables")
+        hook.add_output_filter(Iptables("iptables"))
 
         commands = [call[0][0] for call in mock_run.call_args_list]
         self.assertIn(
@@ -1275,26 +1283,27 @@ class ConfiguredUserBypassTests(unittest.TestCase):
     Verify additional users bypass NAT redirection and output filtering.
     """
 
-    @patch("src.systemd.hook.place_rule_first")
-    def test_redirects_exclude_configured_user(self, mock_place: MagicMock) -> None:
+    def test_redirects_exclude_configured_user(self) -> None:
         """
         Web and DNS redirect owner matches exclude every configured user.
         """
 
-        hook.add_redirect_rule("iptables", 443, ("buildbot",))
-        hook.add_dns_redirect_rule("iptables", "udp", ("buildbot",))
+        firewall = Iptables("iptables")
+        rules: list[Rule] = []
+        with patch.object(firewall, "ensure_first", side_effect=rules.append):
+            hook.add_redirect_rule(firewall, 443, ("buildbot",))
+            hook.add_dns_redirect_rule(firewall, "udp", ("buildbot",))
 
-        for invocation in mock_place.call_args_list:
-            rule = cast(list[str], invocation.args[3])
-            user_index = rule.index("buildbot")
+        for rule in rules:
+            user_index = rule.args.index("buildbot")
             self.assertEqual(
-                rule[user_index - 4 : user_index + 1],
-                ["-m", "owner", "!", "--uid-owner", "buildbot"],
+                rule.args[user_index - 4 : user_index + 1],
+                ("-m", "owner", "!", "--uid-owner", "buildbot"),
             )
 
-    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.iptables.Iptables.ensure_first")
     @patch("src.systemd.hook.add_ntp_filter_rules")
-    @patch("src.systemd.hook.subprocess.run")
+    @patch("src.systemd.iptables.subprocess.run")
     def test_output_filter_allows_configured_user(
         self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
     ) -> None:
@@ -1304,7 +1313,7 @@ class ConfiguredUserBypassTests(unittest.TestCase):
 
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
-        hook.add_output_filter("iptables", ("buildbot",))
+        hook.add_output_filter(Iptables("iptables"), ("buildbot",))
 
         commands = [invocation[0][0] for invocation in mock_run.call_args_list]
         self.assertIn(
@@ -1358,10 +1367,14 @@ class AddCustomRulesTests(unittest.TestCase):
         mock_clear.assert_called_once()
         self.assertEqual(mock_nat.call_count, 2)
         self.assertEqual(mock_add.call_count, 2)
-        mock_nat.assert_any_call("iptables", "192.168.0.0/16", 80)
-        mock_nat.assert_any_call("ip6tables", "2001:db8::/32", 443)
-        mock_add.assert_any_call("iptables", "MITMWALL_OUTPUT", "192.168.0.0/16", 80)
-        mock_add.assert_any_call("ip6tables", "MITMWALL_OUTPUT", "2001:db8::/32", 443)
+        mock_nat.assert_any_call(hook.IPV4, "192.168.0.0/16", 80)
+        mock_nat.assert_any_call(hook.IPV6, "2001:db8::/32", 443)
+        mock_add.assert_any_call(
+            hook.IPV4, "MITMWALL_OUTPUT", "192.168.0.0/16", 80
+        )
+        mock_add.assert_any_call(
+            hook.IPV6, "MITMWALL_OUTPUT", "2001:db8::/32", 443
+        )
 
     @patch("src.systemd.hook.clear_custom_rules")
     @patch("src.systemd.hook.add_rule")
@@ -1424,10 +1437,10 @@ class ClearCustomRulesTests(unittest.TestCase):
         hook.clear_custom_rules()
 
         self.assertEqual(mock_remove.call_count, 4)
-        mock_remove.assert_any_call("iptables", "filter", "MITMWALL_OUTPUT")
-        mock_remove.assert_any_call("ip6tables", "filter", "MITMWALL_OUTPUT")
-        mock_remove.assert_any_call("iptables", "nat", "OUTPUT")
-        mock_remove.assert_any_call("ip6tables", "nat", "OUTPUT")
+        mock_remove.assert_any_call(hook.IPV4, "filter", "MITMWALL_OUTPUT")
+        mock_remove.assert_any_call(hook.IPV6, "filter", "MITMWALL_OUTPUT")
+        mock_remove.assert_any_call(hook.IPV4, "nat", "OUTPUT")
+        mock_remove.assert_any_call(hook.IPV6, "nat", "OUTPUT")
 
 
 class EnsureWebRulesFileTests(unittest.TestCase):
@@ -1784,7 +1797,7 @@ class MainTests(unittest.TestCase):
 
         mock_parse.assert_called_once()
         mock_users.assert_called_once()
-        mock_migrate.assert_called_once_with(hook.probe_xtables, hook.run_xtables)
+        mock_migrate.assert_called_once_with(hook.FIREWALLS)
         mock_configure.assert_called_once()
         mock_add.assert_called_once_with([], ())
 

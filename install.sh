@@ -183,7 +183,7 @@ rm -rf "$optdir/mitmwall_addon" "$optdir/mitmproxy_addon" "$addon_dir"
 install -d -m 0755 "$addon_dir" "$addon_dir/addon" "$addon_dir/systemd" "$addon_dir/utils"
 install -m 0644 "$scriptdir"/src/__init__.py "$addon_dir/"
 install -m 0644 "$scriptdir"/src/addon/*.py "$addon_dir/addon/"
-install -m 0644 "$scriptdir"/src/systemd/__init__.py "$scriptdir"/src/systemd/migrations.py "$scriptdir"/src/systemd/resolv_conf.py "$systemd_dir/"
+install -m 0644 "$scriptdir"/src/systemd/__init__.py "$scriptdir"/src/systemd/iptables.py "$scriptdir"/src/systemd/migrations.py "$scriptdir"/src/systemd/resolv_conf.py "$systemd_dir/"
 install -m 0644 "$scriptdir"/src/utils/*.py "$addon_dir/utils/"
 
 # Repair installations where an earlier upgrade replaced hook.py before stopping

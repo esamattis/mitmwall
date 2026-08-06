@@ -8,7 +8,7 @@ user is allowed to connect upstream.
 
 Ensure all python functions, classes etc. have doc comments.
 
-Ensure valid types by running `basedpyright`
+Types are checked using basedpyright. Installed using uv. Avoid unsafe type casts.
 
 Never use any pypi packages. Only use stdlib.
 

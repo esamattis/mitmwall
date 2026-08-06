@@ -75,10 +75,9 @@ class StartupMigrationTests(unittest.TestCase):
     ) -> None:
         """The public entrypoint runs each migration once."""
 
-        probe = MagicMock()
-        run = MagicMock()
+        firewalls = (MagicMock(), MagicMock())
 
-        migrations.run_startup_migrations(probe, run)
+        migrations.run_startup_migrations(firewalls)
 
         mock_resolver.assert_called_once_with()
-        mock_firewall.assert_called_once_with(probe, run)
+        mock_firewall.assert_called_once_with(firewalls)

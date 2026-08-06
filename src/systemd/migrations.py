@@ -7,23 +7,21 @@ not here.
 """
 
 import os
-from pathlib import Path
 import tempfile
-from typing import Callable
+from collections.abc import Sequence
+from pathlib import Path
+
+from src.systemd.iptables import Iptables, Rule
 
 
 USER = "mitmwall"
 APT_USER = "_apt"
 PROXY_PORT = 58080
 DNS_PORT = 58053
-RULE_ABSENT_ERROR = "Bad rule (does a matching rule exist in that chain?)."
 RESOLVER_STATE_DIR = Path("/var/lib/mitmwall")
 RESOLVER_STATE_FILE = RESOLVER_STATE_DIR / "resolv-conf-state.json"
 LEGACY_RESOLVER_STATE_DIR = Path("/run/mitmwall")
 LEGACY_RESOLVER_STATE_FILE = LEGACY_RESOLVER_STATE_DIR / "resolv-conf-state.json"
-
-XtablesProbe = Callable[[str, list[str], str], object | None]
-XtablesRun = Callable[[str, list[str]], object]
 
 
 def legacy_redirect_rule_args(
@@ -55,30 +53,18 @@ def legacy_redirect_rule_args(
 
 
 def remove_legacy_rule_copies(
-    table_cmd: str,
+    firewall: Iptables,
     rule_args: list[str],
-    probe_xtables: XtablesProbe,
-    run_xtables: XtablesRun,
 ) -> None:
     """Remove every exact copy of a historical rule from the NAT OUTPUT chain."""
 
-    while True:
-        existing = probe_xtables(
-            table_cmd,
-            ["-t", "nat", "-C", "OUTPUT", *rule_args],
-            RULE_ABSENT_ERROR,
-        )
-        if existing is None:
-            break
-        _ = run_xtables(table_cmd, ["-t", "nat", "-D", "OUTPUT", *rule_args])
+    firewall.remove_all(Rule("nat", "OUTPUT", tuple(rule_args)))
 
 
-def clear_legacy_redirect_rules(
-    probe_xtables: XtablesProbe, run_xtables: XtablesRun
-) -> None:
+def clear_legacy_redirect_rules(firewalls: Sequence[Iptables]) -> None:
     """Remove untagged redirect forms installed by historical helpers."""
 
-    for table_cmd in ("iptables", "ip6tables"):
+    for firewall in firewalls:
         for dport in (80, 443):
             for excluded_users, exclude_loopback in (
                 ((USER,), False),
@@ -87,7 +73,7 @@ def clear_legacy_redirect_rules(
                 (("0", USER, APT_USER), True),
             ):
                 remove_legacy_rule_copies(
-                    table_cmd,
+                    firewall,
                     legacy_redirect_rule_args(
                         "tcp",
                         dport,
@@ -95,8 +81,6 @@ def clear_legacy_redirect_rules(
                         excluded_users,
                         exclude_loopback=exclude_loopback,
                     ),
-                    probe_xtables,
-                    run_xtables,
                 )
 
         for protocol in ("udp", "tcp"):
@@ -105,15 +89,13 @@ def clear_legacy_redirect_rules(
                 ("0", USER, "systemd-resolve", APT_USER),
             ):
                 remove_legacy_rule_copies(
-                    table_cmd,
+                    firewall,
                     legacy_redirect_rule_args(
                         protocol,
                         53,
                         DNS_PORT,
                         excluded_users,
                     ),
-                    probe_xtables,
-                    run_xtables,
                 )
 
 
@@ -156,10 +138,8 @@ def migrate_legacy_resolver_state() -> None:
         pass
 
 
-def run_startup_migrations(
-    probe_xtables: XtablesProbe, run_xtables: XtablesRun
-) -> None:
+def run_startup_migrations(firewalls: Sequence[Iptables]) -> None:
     """Migrate state left by older mitmwall versions before current-state setup."""
 
     migrate_legacy_resolver_state()
-    clear_legacy_redirect_rules(probe_xtables, run_xtables)
+    clear_legacy_redirect_rules(firewalls)
