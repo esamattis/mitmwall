@@ -22,6 +22,10 @@ flow_history_clear_interval = 1000
 # flow history entries.
 flow_history_keep_entries = 500
 
+# Additional existing local users that may connect directly to any network
+# destination without passing through mitmwall. The default is an empty array.
+bypass_users = []
+
 # Custom iptables bypass rules. Allow some IP ranges or ports to bypass the
 # firewall and proxy. Bypassed traffic will not be visible in mitmweb and will
 # not be subject to the addon rules.

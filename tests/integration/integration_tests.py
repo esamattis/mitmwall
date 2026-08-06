@@ -4,6 +4,7 @@ Integration tests for mitmwall network allow/block rules.
 """
 
 import json
+import pwd
 import socket
 import ssl
 import struct
@@ -33,6 +34,7 @@ ADMIN_RULE_COMMENT = "mitmwall-integration-admin"
 INSTALLED_CONFIG = Path("/etc/mitmwall/config.toml")
 INSTALLED_HOOK = Path("/opt/mitmwall/hook.py")
 INTEGRATION_CONFIG = Path(__file__).with_name("integration-test-config.toml")
+BYPASS_TEST_USER = "mitmwall-integration-bypass"
 
 
 def wait_for_tcp_listener(host: str, port: int, timeout_seconds: float) -> bool:
@@ -120,6 +122,41 @@ def fetch_tls_certificate(host: str, server_hostname: str) -> bytes:
     if certificate is None:
         raise RuntimeError(f"{host}:443 returned no TLS certificate")
     return certificate
+
+
+def fetch_tls_certificate_as_user(
+    user: str, host: str, server_hostname: str
+) -> bytes:
+    """
+    Fetch a peer certificate in a subprocess running as a specified local user.
+    """
+
+    script = """import socket
+import ssl
+import sys
+context = ssl.create_default_context(cafile=sys.argv[3])
+with socket.create_connection((sys.argv[1], 443), timeout=5) as connection:
+    with context.wrap_socket(connection, server_hostname=sys.argv[2]) as tls_connection:
+        certificate = tls_connection.getpeercert(binary_form=True)
+if certificate is None:
+    raise RuntimeError("peer returned no TLS certificate")
+print(certificate.hex())
+"""
+    result = run_sudo(
+        [
+            "runuser",
+            "-u",
+            user,
+            "--",
+            "python3",
+            "-c",
+            script,
+            host,
+            server_hostname,
+            str(SYSTEM_CA_CERTIFICATES),
+        ]
+    )
+    return bytes.fromhex(result.stdout.strip())
 
 
 class ReadableResponse(Protocol):
@@ -686,6 +723,33 @@ class MitmwallNetworkTests(unittest.TestCase):
             "172.64.155.209",
             443,
         )
+
+    def test_configured_user_bypasses_firewall_and_proxy(self) -> None:
+        """
+        Verify a configured local user reaches TLS upstream without interception.
+        """
+
+        host = "1.1.1.1"
+        server_hostname = "cloudflare-dns.com"
+        proxied_certificate = fetch_tls_certificate(host, server_hostname)
+        bypassed_certificate = fetch_tls_certificate_as_user(
+            BYPASS_TEST_USER, host, server_hostname
+        )
+
+        self.assertNotEqual(
+            proxied_certificate,
+            bypassed_certificate,
+            "configured bypass user still appeared to use the transparent proxy",
+        )
+        bypass_uid = pwd.getpwnam(BYPASS_TEST_USER).pw_uid
+        for table_command in ("iptables", "ip6tables"):
+            with self.subTest(table_command=table_command):
+                filter_rules = list_table_rules(table_command, "filter")
+                nat_rules = list_table_rules(table_command, "nat")
+                self.assertIn(
+                    f"--uid-owner {bypass_uid} -j ACCEPT", filter_rules
+                )
+                self.assertIn(f"! --uid-owner {bypass_uid}", nat_rules)
 
     def test_direct_dns_queries_to_public_resolver_are_proxied(self) -> None:
         """

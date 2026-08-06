@@ -1,6 +1,8 @@
 # Integration test configuration for mitmwall.
 # Installed to /etc/mitmwall/config.toml by dev-install.sh.
 
+bypass_users = ["mitmwall-integration-bypass"]
+
 # Allow direct TCP connections to Google Public DNS on port 443 for integration
 # testing of custom iptables rule support.
 [[iptables.bypass]]

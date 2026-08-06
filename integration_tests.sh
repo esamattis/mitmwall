@@ -16,6 +16,11 @@ original_ipv4_forwarding=$(sysctl -n net.ipv4.ip_forward)
 original_ipv6_forwarding=$(sysctl -n net.ipv6.conf.all.forwarding)
 original_ipv4_send_redirects=$(sysctl -n net.ipv4.conf.all.send_redirects)
 
+bypass_test_user=mitmwall-integration-bypass
+if ! id "$bypass_test_user" >/dev/null 2>&1; then
+    sudo useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "$bypass_test_user"
+fi
+
 sudo ./dev-install.sh
 
 state_dir=/run/mitmwall

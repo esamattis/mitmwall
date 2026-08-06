@@ -11,6 +11,7 @@ import ipaddress
 import json
 import logging
 import os
+import pwd
 import stat
 import subprocess
 import sys
@@ -32,6 +33,7 @@ DNS_PORT = 58053
 WEB_PORT = 58081
 CHAIN = "MITMWALL_OUTPUT"
 COMMENT = "mitmwall-custom"
+REDIRECT_COMMENT = "mitmwall-redirect"
 XTABLES_WAIT_SECONDS = 10
 RULE_ABSENT_ERROR = "Bad rule (does a matching rule exist in that chain?)."
 CHAIN_ABSENT_ERROR = "No chain/target/match by that name."
@@ -416,7 +418,20 @@ def enable_forwarding() -> None:
         raise
 
 
-def add_redirect_rule(table_cmd: str, dport: int) -> None:
+def owner_exclusion_args(users: tuple[str, ...]) -> list[str]:
+    """
+    Build negated owner matches for users excluded from a redirect rule.
+    """
+
+    args: list[str] = []
+    for user in users:
+        args.extend(["-m", "owner", "!", "--uid-owner", user])
+    return args
+
+
+def add_redirect_rule(
+    table_cmd: str, dport: int, bypass_users: tuple[str, ...] = ()
+) -> None:
     """
     Capture direct outbound HTTP/HTTPS attempts from users other than root, the
     proxy user, and APT's sandbox user, then redirect them to the local proxy.
@@ -447,23 +462,13 @@ def add_redirect_rule(table_cmd: str, dport: int) -> None:
             "!",
             "-o",
             "lo",
-            "-m",
-            "owner",
-            "!",
-            "--uid-owner",
-            "0",
-            "-m",
-            "owner",
-            "!",
-            "--uid-owner",
-            USER,
-            "-m",
-            "owner",
-            "!",
-            "--uid-owner",
-            APT_USER,
+            *owner_exclusion_args(("0", USER, APT_USER, *bypass_users)),
             "--dport",
             str(dport),
+            "-m",
+            "comment",
+            "--comment",
+            REDIRECT_COMMENT,
             "-j",
             "REDIRECT",
             "--to-port",
@@ -555,7 +560,9 @@ def remove_redirect_rule(table_cmd: str, dport: int) -> None:
         )
 
 
-def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
+def add_dns_redirect_rule(
+    table_cmd: str, protocol: str, bypass_users: tuple[str, ...] = ()
+) -> None:
     """
     Capture DNS attempts from ordinary users, including queries aimed at local
     resolvers such as 127.0.0.53, and send them to mitmproxy's DNS mode listener.
@@ -571,28 +578,15 @@ def add_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
         [
             "-p",
             protocol,
-            "-m",
-            "owner",
-            "!",
-            "--uid-owner",
-            "0",
-            "-m",
-            "owner",
-            "!",
-            "--uid-owner",
-            USER,
-            "-m",
-            "owner",
-            "!",
-            "--uid-owner",
-            "systemd-resolve",
-            "-m",
-            "owner",
-            "!",
-            "--uid-owner",
-            APT_USER,
+            *owner_exclusion_args(
+                ("0", USER, "systemd-resolve", APT_USER, *bypass_users)
+            ),
             "--dport",
             "53",
+            "-m",
+            "comment",
+            "--comment",
+            REDIRECT_COMMENT,
             "-j",
             "REDIRECT",
             "--to-port",
@@ -748,6 +742,7 @@ def clear_legacy_redirect_rules() -> None:
                 ((USER,), False),
                 ((USER,), True),
                 (("0", USER), True),
+                (("0", USER, APT_USER), True),
             ):
                 remove_legacy_rule_copies(
                     table_cmd,
@@ -761,15 +756,19 @@ def clear_legacy_redirect_rules() -> None:
                 )
 
         for protocol in ("udp", "tcp"):
-            remove_legacy_rule_copies(
-                table_cmd,
-                legacy_redirect_rule_args(
-                    protocol,
-                    53,
-                    DNS_PORT,
-                    ("0", USER, "systemd-resolve"),
-                ),
-            )
+            for excluded_users in (
+                ("0", USER, "systemd-resolve"),
+                ("0", USER, "systemd-resolve", APT_USER),
+            ):
+                remove_legacy_rule_copies(
+                    table_cmd,
+                    legacy_redirect_rule_args(
+                        protocol,
+                        53,
+                        DNS_PORT,
+                        excluded_users,
+                    ),
+                )
 
 
 def add_ntp_filter_rules(table_cmd: str) -> None:
@@ -955,7 +954,9 @@ def remove_ntp_dns_bypass_rule(table_cmd: str, protocol: str) -> None:
             )
 
 
-def add_output_filter(table_cmd: str) -> None:
+def add_output_filter(
+    table_cmd: str, bypass_users: tuple[str, ...] = ()
+) -> None:
     """
     Enforce the outbound allowlist.  Reply-direction established/related packets
     are allowed so inbound connections (for example SSH) are not broken.  The
@@ -1004,6 +1005,24 @@ def add_output_filter(table_cmd: str) -> None:
             "ACCEPT",
         ],
     )
+
+    # Operator-configured users bypass the proxy and fail-closed output policy.
+    for bypass_user in bypass_users:
+        _ = run_xtables(
+            table_cmd,
+            [
+                "-t",
+                "filter",
+                "-A",
+                CHAIN,
+                "-m",
+                "owner",
+                "--uid-owner",
+                bypass_user,
+                "-j",
+                "ACCEPT",
+            ],
+        )
 
     # Root needs unrestricted outbound access for host administration and
     # troubleshooting, matching the bypass behavior of the proxy user.
@@ -1277,36 +1296,42 @@ def ensure_web_rules_file() -> None:
     )
 
 
-def add_rules(custom_rules: list[CustomRule] | None = None) -> None:
+def add_rules(
+    custom_rules: list[CustomRule] | None = None,
+    bypass_users: tuple[str, ...] | None = None,
+) -> None:
     """
     Install the full transparent proxy firewall policy.
     """
 
     if custom_rules is None:
         custom_rules = parse_custom_rules()
+    if bypass_users is None:
+        bypass_users = parse_bypass_users()
 
+    clear_managed_redirect_rules()
     clear_legacy_redirect_rules()
     enable_forwarding()
 
     # Every managed NAT rule is moved to the head.  Install generic redirects
     # first, then bypasses, so bypasses retain their required higher precedence.
-    add_dns_redirect_rule("iptables", "udp")
-    add_dns_redirect_rule("iptables", "tcp")
-    add_dns_redirect_rule("ip6tables", "udp")
-    add_dns_redirect_rule("ip6tables", "tcp")
+    add_dns_redirect_rule("iptables", "udp", bypass_users)
+    add_dns_redirect_rule("iptables", "tcp", bypass_users)
+    add_dns_redirect_rule("ip6tables", "udp", bypass_users)
+    add_dns_redirect_rule("ip6tables", "tcp", bypass_users)
 
-    add_redirect_rule("iptables", 80)
-    add_redirect_rule("iptables", 443)
-    add_redirect_rule("ip6tables", 80)
-    add_redirect_rule("ip6tables", 443)
+    add_redirect_rule("iptables", 80, bypass_users)
+    add_redirect_rule("iptables", 443, bypass_users)
+    add_redirect_rule("ip6tables", 80, bypass_users)
+    add_redirect_rule("ip6tables", 443, bypass_users)
 
     add_ntp_dns_bypass_rule("iptables", "udp")
     add_ntp_dns_bypass_rule("iptables", "tcp")
     add_ntp_dns_bypass_rule("ip6tables", "udp")
     add_ntp_dns_bypass_rule("ip6tables", "tcp")
 
-    add_output_filter("iptables")
-    add_output_filter("ip6tables")
+    add_output_filter("iptables", bypass_users)
+    add_output_filter("ip6tables", bypass_users)
 
     add_custom_rules(custom_rules)
 
@@ -1316,6 +1341,7 @@ def clear_rules() -> None:
     Remove all firewall rules installed by the "start" action.
     """
 
+    clear_managed_redirect_rules()
     clear_legacy_redirect_rules()
     clear_custom_rules()
 
@@ -1343,6 +1369,49 @@ def clear_rules() -> None:
 # ---------------------------------------------------------------------------
 
 
+def load_config(config_path: Path) -> dict[str, object]:
+    """
+    Load a TOML configuration file as a string-keyed table.
+    """
+
+    if not config_path.exists():
+        return {}
+    with config_path.open("rb") as file:
+        config_value = cast(object, tomllib.load(file))
+    if not is_toml_table(config_value):
+        return {}
+    return config_value
+
+
+def parse_bypass_users(config_path: Path = ADDON_CONFIG_FILE) -> tuple[str, ...]:
+    """
+    Parse and validate additional users with unrestricted outbound access.
+    """
+
+    config_value = load_config(config_path)
+    value = config_value.get("bypass_users", [])
+    error_prefix = f"invalid bypass user configuration in {config_path}: "
+    if not isinstance(value, list):
+        raise ValueError(error_prefix + "'bypass_users' must be an array of strings")
+
+    users: list[str] = []
+    for index, user_value in enumerate(cast(list[object], value), start=1):
+        if not isinstance(user_value, str) or not user_value:
+            raise ValueError(
+                error_prefix + f"'bypass_users' entry {index} must be a non-empty string"
+            )
+        try:
+            _ = pwd.getpwnam(user_value)
+        except KeyError as error:
+            raise ValueError(
+                error_prefix
+                + f"'bypass_users' entry {index} names unknown user {user_value!r}"
+            ) from error
+        if user_value not in users and user_value not in {"root", USER, APT_USER}:
+            users.append(user_value)
+    return tuple(users)
+
+
 def parse_custom_rules(config_path: Path = ADDON_CONFIG_FILE) -> list[CustomRule]:
     """
     Parse and validate custom iptables bypass rules from a TOML config file.
@@ -1351,14 +1420,7 @@ def parse_custom_rules(config_path: Path = ADDON_CONFIG_FILE) -> list[CustomRule
     yield no rules, while every present bypass entry must be fully valid.
     """
 
-    if not config_path.exists():
-        return []
-
-    with config_path.open("rb") as file:
-        config_value = cast(object, tomllib.load(file))
-
-    if not is_toml_table(config_value):
-        return []
+    config_value = load_config(config_path)
 
     if "iptables" not in config_value:
         return []
@@ -1550,6 +1612,34 @@ def remove_comment_rules(table_cmd: str, table: str, chain: str) -> None:
             break
 
 
+def clear_managed_redirect_rules() -> None:
+    """
+    Remove all tagged web and DNS redirects, including stale user combinations.
+    """
+
+    for table_cmd in ("iptables", "ip6tables"):
+        while True:
+            result = probe_xtables(
+                table_cmd,
+                ["-t", "nat", "-L", "OUTPUT", "--line-numbers"],
+                CHAIN_ABSENT_ERROR,
+            )
+            if result is None:
+                break
+            removed = False
+            for line in result.stdout.splitlines():
+                if REDIRECT_COMMENT in line:
+                    parts = line.split()
+                    if parts and parts[0].isdigit():
+                        _ = run_xtables(
+                            table_cmd, ["-t", "nat", "-D", "OUTPUT", parts[0]]
+                        )
+                        removed = True
+                        break
+            if not removed:
+                break
+
+
 def remove_custom_rules_from_chain(table_cmd: str, chain: str) -> None:
     """
     Remove all rules tagged with the mitmwall-custom comment from a filter chain.
@@ -1591,10 +1681,11 @@ def main() -> None:
     action = sys.argv[1]
     if action == "start":
         custom_rules = parse_custom_rules()
+        bypass_users = parse_bypass_users()
         try:
             configure_system_resolver()
             ensure_web_rules_file()
-            add_rules(custom_rules)
+            add_rules(custom_rules, bypass_users)
         except BaseException as start_error:
             try:
                 _restored = restore_forwarding()

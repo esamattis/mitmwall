@@ -125,6 +125,15 @@ class AddonConfigTests(unittest.TestCase):
 
         self.assertTrue(addon_config.block_dns)
 
+    def test_parse_addon_config_accepts_bypass_users_key(self) -> None:
+        """
+        Accept the bypass user option consumed by the systemd hook.
+        """
+
+        addon_config = parse_addon_config({"bypass_users": ["buildbot"]})
+
+        self.assertTrue(addon_config.block_dns)
+
 
 if __name__ == "__main__":
     _test_program = unittest.main(verbosity=2)

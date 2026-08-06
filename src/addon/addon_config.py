@@ -103,6 +103,7 @@ def parse_addon_config(config_value: object) -> AddonConfig:
 
     extra_top_level_keys = set(config_value) - {
         "block_dns",
+        "bypass_users",
         "flow_history_clear_interval",
         "flow_history_keep_entries",
         "iptables",

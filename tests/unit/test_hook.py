@@ -138,6 +138,61 @@ port = 443
             path.unlink()
 
 
+class ParseBypassUsersTests(unittest.TestCase):
+    """
+    Verify parsing of additional unrestricted users from TOML config.
+    """
+
+    @patch("src.systemd.hook.pwd.getpwnam")
+    def test_valid_users_are_deduplicated(self, mock_getpwnam: MagicMock) -> None:
+        """
+        Existing custom users are returned once in configured order.
+        """
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
+            _ = file.write('bypass_users = ["buildbot", "buildbot", "deployment"]\n')
+            path = Path(file.name)
+
+        try:
+            users = hook.parse_bypass_users(path)
+        finally:
+            path.unlink()
+
+        self.assertEqual(users, ("buildbot", "deployment"))
+        self.assertEqual(mock_getpwnam.call_count, 3)
+
+    def test_non_array_is_rejected(self) -> None:
+        """
+        The bypass user option must be a TOML array.
+        """
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
+            _ = file.write('bypass_users = "buildbot"\n')
+            path = Path(file.name)
+
+        try:
+            with self.assertRaisesRegex(ValueError, "must be an array of strings"):
+                _ = hook.parse_bypass_users(path)
+        finally:
+            path.unlink()
+
+    @patch("src.systemd.hook.pwd.getpwnam", side_effect=KeyError)
+    def test_unknown_user_is_rejected(self, _mock_getpwnam: MagicMock) -> None:
+        """
+        Configuration fails before firewall changes when an account is absent.
+        """
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as file:
+            _ = file.write('bypass_users = ["missing-user"]\n')
+            path = Path(file.name)
+
+        try:
+            with self.assertRaisesRegex(ValueError, "names unknown user 'missing-user'"):
+                _ = hook.parse_bypass_users(path)
+        finally:
+            path.unlink()
+
+
 class FindDropLineNumberTests(unittest.TestCase):
     """
     Verify extraction of the DROP rule line number from iptables output.
@@ -627,7 +682,7 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
 
         hook.clear_legacy_redirect_rules()
 
-        self.assertEqual(mock_remove.call_count, 16)
+        self.assertEqual(mock_remove.call_count, 24)
         for table_cmd in ("iptables", "ip6tables"):
             mock_remove.assert_any_call(
                 table_cmd,
@@ -657,11 +712,11 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
                 )
 
     @patch("src.systemd.hook.remove_legacy_rule_copies")
-    def test_does_not_treat_current_redirects_as_legacy(
+    def test_removes_pre_tagged_current_redirects(
         self, mock_remove: MagicMock
     ) -> None:
         """
-        Legacy migration leaves current APT-excluding forms to normal cleanup.
+        Migration removes the final untagged forms that included the APT user.
         """
 
         hook.clear_legacy_redirect_rules()
@@ -671,7 +726,7 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
             for invocation in mock_remove.call_args_list
         ]
         self.assertTrue(removed_rules)
-        self.assertTrue(all(hook.APT_USER not in rule for rule in removed_rules))
+        self.assertTrue(any(hook.APT_USER in rule for rule in removed_rules))
 
     @patch("src.systemd.hook.subprocess.run")
     def test_removes_every_copy_by_exact_rule_syntax(
@@ -1060,6 +1115,7 @@ class ManagedNatOrderingTests(unittest.TestCase):
 
         manager = MagicMock()
         with (
+            patch("src.systemd.hook.clear_managed_redirect_rules"),
             patch("src.systemd.hook.clear_legacy_redirect_rules"),
             patch("src.systemd.hook.enable_forwarding") as mock_forwarding,
             patch("src.systemd.hook.add_dns_redirect_rule") as mock_dns,
@@ -1068,6 +1124,7 @@ class ManagedNatOrderingTests(unittest.TestCase):
             patch("src.systemd.hook.add_output_filter") as mock_filter,
             patch("src.systemd.hook.add_custom_rules") as mock_custom,
             patch("src.systemd.hook.parse_custom_rules", return_value=[]),
+            patch("src.systemd.hook.parse_bypass_users", return_value=()),
         ):
             manager.attach_mock(mock_forwarding, "forwarding")
             manager.attach_mock(mock_dns, "dns")
@@ -1078,25 +1135,29 @@ class ManagedNatOrderingTests(unittest.TestCase):
 
             hook.add_rules()
 
+        actual_calls = [
+            str(invocation)
+            for invocation in cast(list[object], manager.mock_calls)
+        ]
         self.assertEqual(
-            manager.mock_calls,
+            actual_calls,
             [
-                call.forwarding(),
-                call.dns("iptables", "udp"),
-                call.dns("iptables", "tcp"),
-                call.dns("ip6tables", "udp"),
-                call.dns("ip6tables", "tcp"),
-                call.web("iptables", 80),
-                call.web("iptables", 443),
-                call.web("ip6tables", 80),
-                call.web("ip6tables", 443),
-                call.ntp("iptables", "udp"),
-                call.ntp("iptables", "tcp"),
-                call.ntp("ip6tables", "udp"),
-                call.ntp("ip6tables", "tcp"),
-                call.filter("iptables"),
-                call.filter("ip6tables"),
-                call.custom([]),
+                "call.forwarding()",
+                "call.dns('iptables', 'udp', ())",
+                "call.dns('iptables', 'tcp', ())",
+                "call.dns('ip6tables', 'udp', ())",
+                "call.dns('ip6tables', 'tcp', ())",
+                "call.web('iptables', 80, ())",
+                "call.web('iptables', 443, ())",
+                "call.web('ip6tables', 80, ())",
+                "call.web('ip6tables', 443, ())",
+                "call.ntp('iptables', 'udp')",
+                "call.ntp('iptables', 'tcp')",
+                "call.ntp('ip6tables', 'udp')",
+                "call.ntp('ip6tables', 'tcp')",
+                "call.filter('iptables', ())",
+                "call.filter('ip6tables', ())",
+                "call.custom([])",
             ],
         )
 
@@ -1193,6 +1254,63 @@ class AptSandboxBypassTests(unittest.TestCase):
                 "owner",
                 "--uid-owner",
                 hook.APT_USER,
+                "-j",
+                "ACCEPT",
+            ],
+            commands,
+        )
+
+
+class ConfiguredUserBypassTests(unittest.TestCase):
+    """
+    Verify additional users bypass NAT redirection and output filtering.
+    """
+
+    @patch("src.systemd.hook.place_rule_first")
+    def test_redirects_exclude_configured_user(self, mock_place: MagicMock) -> None:
+        """
+        Web and DNS redirect owner matches exclude every configured user.
+        """
+
+        hook.add_redirect_rule("iptables", 443, ("buildbot",))
+        hook.add_dns_redirect_rule("iptables", "udp", ("buildbot",))
+
+        for invocation in mock_place.call_args_list:
+            rule = cast(list[str], invocation.args[3])
+            user_index = rule.index("buildbot")
+            self.assertEqual(
+                rule[user_index - 4 : user_index + 1],
+                ["-m", "owner", "!", "--uid-owner", "buildbot"],
+            )
+
+    @patch("src.systemd.hook.place_rule_first")
+    @patch("src.systemd.hook.add_ntp_filter_rules")
+    @patch("src.systemd.hook.subprocess.run")
+    def test_output_filter_allows_configured_user(
+        self, mock_run: MagicMock, _mock_ntp: MagicMock, _mock_place: MagicMock
+    ) -> None:
+        """
+        The fail-closed output chain accepts sockets owned by configured users.
+        """
+
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+
+        hook.add_output_filter("iptables", ("buildbot",))
+
+        commands = [invocation[0][0] for invocation in mock_run.call_args_list]
+        self.assertIn(
+            [
+                "iptables",
+                "-w",
+                "10",
+                "-t",
+                "filter",
+                "-A",
+                hook.CHAIN,
+                "-m",
+                "owner",
+                "--uid-owner",
+                "buildbot",
                 "-j",
                 "ACCEPT",
             ],
@@ -1654,13 +1772,15 @@ class MainTests(unittest.TestCase):
         with (
             patch("src.systemd.hook.configure_system_resolver") as mock_configure,
             patch("src.systemd.hook.parse_custom_rules", return_value=[]) as mock_parse,
+            patch("src.systemd.hook.parse_bypass_users", return_value=()) as mock_users,
             patch("sys.argv", ["hook.py", "start"]),
         ):
             hook.main()
 
         mock_parse.assert_called_once()
+        mock_users.assert_called_once()
         mock_configure.assert_called_once()
-        mock_add.assert_called_once_with([])
+        mock_add.assert_called_once_with([], ())
 
     def test_main_rejects_custom_rules_before_startup_mutation(self) -> None:
         """
