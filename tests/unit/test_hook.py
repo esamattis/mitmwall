@@ -7,9 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import ANY, MagicMock, call, patch
 
-from src.systemd import hook, resolv_conf as resolver
+from src.systemd import hook, migrations, resolv_conf as resolver
 
 
 class ParseCustomRulesTests(unittest.TestCase):
@@ -672,7 +672,7 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
     Verify cleanup recognizes exact untagged redirect forms from old helpers.
     """
 
-    @patch("src.systemd.hook.remove_legacy_rule_copies")
+    @patch("src.systemd.migrations.remove_legacy_rule_copies")
     def test_removes_all_shipped_legacy_redirect_forms(
         self, mock_remove: MagicMock
     ) -> None:
@@ -680,38 +680,44 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
         IPv4 and IPv6 web and DNS signatures from prior releases are removed.
         """
 
-        hook.clear_legacy_redirect_rules()
+        migrations.clear_legacy_redirect_rules(MagicMock(), MagicMock())
 
         self.assertEqual(mock_remove.call_count, 24)
         for table_cmd in ("iptables", "ip6tables"):
             mock_remove.assert_any_call(
                 table_cmd,
-                hook.legacy_redirect_rule_args(
-                    "tcp", 80, hook.PROXY_PORT, (hook.USER,)
+                migrations.legacy_redirect_rule_args(
+                    "tcp", 80, migrations.PROXY_PORT, (migrations.USER,)
                 ),
+                ANY,
+                ANY,
             )
             mock_remove.assert_any_call(
                 table_cmd,
-                hook.legacy_redirect_rule_args(
+                migrations.legacy_redirect_rule_args(
                     "tcp",
                     443,
-                    hook.PROXY_PORT,
-                    ("0", hook.USER),
+                    migrations.PROXY_PORT,
+                    ("0", migrations.USER),
                     exclude_loopback=True,
                 ),
+                ANY,
+                ANY,
             )
             for protocol in ("udp", "tcp"):
                 mock_remove.assert_any_call(
                     table_cmd,
-                    hook.legacy_redirect_rule_args(
+                    migrations.legacy_redirect_rule_args(
                         protocol,
                         53,
-                        hook.DNS_PORT,
-                        ("0", hook.USER, "systemd-resolve"),
+                        migrations.DNS_PORT,
+                        ("0", migrations.USER, "systemd-resolve"),
                     ),
+                    ANY,
+                    ANY,
                 )
 
-    @patch("src.systemd.hook.remove_legacy_rule_copies")
+    @patch("src.systemd.migrations.remove_legacy_rule_copies")
     def test_removes_pre_tagged_current_redirects(
         self, mock_remove: MagicMock
     ) -> None:
@@ -719,14 +725,14 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
         Migration removes the final untagged forms that included the APT user.
         """
 
-        hook.clear_legacy_redirect_rules()
+        migrations.clear_legacy_redirect_rules(MagicMock(), MagicMock())
 
         removed_rules = [
             cast(list[str], invocation.args[1])
             for invocation in mock_remove.call_args_list
         ]
         self.assertTrue(removed_rules)
-        self.assertTrue(any(hook.APT_USER in rule for rule in removed_rules))
+        self.assertTrue(any(migrations.APT_USER in rule for rule in removed_rules))
 
     @patch("src.systemd.hook.subprocess.run")
     def test_removes_every_copy_by_exact_rule_syntax(
@@ -745,11 +751,17 @@ class LegacyRedirectCleanupTests(unittest.TestCase):
                 args=[], returncode=1, stderr=hook.RULE_ABSENT_ERROR
             ),
         ]
-        rule = hook.legacy_redirect_rule_args(
-            "tcp", 443, hook.PROXY_PORT, ("0", hook.USER), exclude_loopback=True
+        rule = migrations.legacy_redirect_rule_args(
+            "tcp",
+            443,
+            migrations.PROXY_PORT,
+            ("0", migrations.USER),
+            exclude_loopback=True,
         )
 
-        hook.remove_legacy_rule_copies("iptables", rule)
+        migrations.remove_legacy_rule_copies(
+            "iptables", rule, hook.probe_xtables, hook.run_xtables
+        )
 
         commands = [invocation.args[0] for invocation in mock_run.call_args_list]
         delete_command = [
@@ -1116,7 +1128,6 @@ class ManagedNatOrderingTests(unittest.TestCase):
         manager = MagicMock()
         with (
             patch("src.systemd.hook.clear_managed_redirect_rules"),
-            patch("src.systemd.hook.clear_legacy_redirect_rules"),
             patch("src.systemd.hook.enable_forwarding") as mock_forwarding,
             patch("src.systemd.hook.add_dns_redirect_rule") as mock_dns,
             patch("src.systemd.hook.add_redirect_rule") as mock_web,
@@ -1171,14 +1182,12 @@ class ManagedNatOrderingTests(unittest.TestCase):
                 "src.systemd.hook.parse_custom_rules",
                 side_effect=ValueError("invalid custom firewall configuration"),
             ),
-            patch("src.systemd.hook.clear_legacy_redirect_rules") as mock_legacy,
             patch("src.systemd.hook.enable_forwarding") as mock_forwarding,
             patch("src.systemd.hook.run_xtables") as mock_xtables,
         ):
             with self.assertRaisesRegex(ValueError, "invalid custom firewall"):
                 hook.add_rules()
 
-        mock_legacy.assert_not_called()
         mock_forwarding.assert_not_called()
         mock_xtables.assert_not_called()
 
@@ -1529,7 +1538,6 @@ class SystemResolverTests(unittest.TestCase):
                 patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
-                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
                 self.assertLogs(resolver.LOGGER, level="INFO") as logs,
             ):
@@ -1573,7 +1581,6 @@ class SystemResolverTests(unittest.TestCase):
                 patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
-                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
             ):
                 resolver.configure_system_resolver(Path("/nonexistent/config.toml"))
@@ -1608,7 +1615,6 @@ class SystemResolverTests(unittest.TestCase):
                 patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
-                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
             ):
                 with self.assertRaisesRegex(RuntimeError, "systemd-resolved is not active"):
@@ -1644,7 +1650,6 @@ class SystemResolverTests(unittest.TestCase):
                 patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
-                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
                 self.assertLogs(resolver.LOGGER, level="INFO") as logs,
             ):
@@ -1696,7 +1701,6 @@ class SystemResolverTests(unittest.TestCase):
                 patch("src.systemd.resolv_conf.SYSTEMD_RESOLVED_STUB", stub),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_DIR", state_dir),
                 patch("src.systemd.resolv_conf.RESOLVER_STATE_FILE", state_file),
-                patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_DIR", legacy_state_dir),
                 patch("src.systemd.resolv_conf.LEGACY_RESOLVER_STATE_FILE", legacy_state_file),
             ):
                 resolver.restore_system_resolver()
@@ -1770,6 +1774,7 @@ class MainTests(unittest.TestCase):
         """
 
         with (
+            patch("src.systemd.hook.run_startup_migrations") as mock_migrate,
             patch("src.systemd.hook.configure_system_resolver") as mock_configure,
             patch("src.systemd.hook.parse_custom_rules", return_value=[]) as mock_parse,
             patch("src.systemd.hook.parse_bypass_users", return_value=()) as mock_users,
@@ -1779,6 +1784,7 @@ class MainTests(unittest.TestCase):
 
         mock_parse.assert_called_once()
         mock_users.assert_called_once()
+        mock_migrate.assert_called_once_with(hook.probe_xtables, hook.run_xtables)
         mock_configure.assert_called_once()
         mock_add.assert_called_once_with([], ())
 
@@ -1792,6 +1798,7 @@ class MainTests(unittest.TestCase):
                 "src.systemd.hook.parse_custom_rules",
                 side_effect=ValueError("invalid custom firewall configuration"),
             ),
+            patch("src.systemd.hook.run_startup_migrations") as mock_migrate,
             patch("src.systemd.hook.configure_system_resolver") as mock_configure,
             patch("src.systemd.hook.ensure_web_rules_file") as mock_ensure,
             patch("src.systemd.hook.add_rules") as mock_add,
@@ -1801,6 +1808,7 @@ class MainTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "invalid custom firewall"):
                 hook.main()
 
+        mock_migrate.assert_not_called()
         mock_configure.assert_not_called()
         mock_ensure.assert_not_called()
         mock_add.assert_not_called()
@@ -1816,6 +1824,7 @@ class MainTests(unittest.TestCase):
         """
 
         with (
+            patch("src.systemd.hook.run_startup_migrations"),
             patch("src.systemd.hook.configure_system_resolver") as mock_configure,
             patch("src.systemd.hook.restore_forwarding") as mock_forward_restore,
             patch("src.systemd.hook.restore_system_resolver") as mock_restore,
@@ -1878,6 +1887,7 @@ class MainTests(unittest.TestCase):
 
         mock_add.side_effect = RuntimeError("rule setup failed")
         with (
+            patch("src.systemd.hook.run_startup_migrations"),
             patch("src.systemd.hook.configure_system_resolver"),
             patch("src.systemd.hook.restore_forwarding") as mock_forward_restore,
             patch("src.systemd.hook.restore_system_resolver") as mock_resolver_restore,

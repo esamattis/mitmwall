@@ -70,15 +70,16 @@ import tomllib
 from typing import Literal, cast
 
 from src.addon.constants import ADDON_CONFIG_FILE, DEFAULT_MANAGE_RESOLV_CONF
+from src.systemd.migrations import (
+    LEGACY_RESOLVER_STATE_FILE,
+    RESOLVER_STATE_DIR,
+    RESOLVER_STATE_FILE,
+)
 from src.utils.toml_helpers import is_toml_table
 
 LOGGER = logging.getLogger("mitmwall.resolv_conf")
 RESOLV_CONF = Path("/etc/resolv.conf")
 SYSTEMD_RESOLVED_STUB = Path("/run/systemd/resolve/stub-resolv.conf")
-RESOLVER_STATE_DIR = Path("/var/lib/mitmwall")
-RESOLVER_STATE_FILE = RESOLVER_STATE_DIR / "resolv-conf-state.json"
-LEGACY_RESOLVER_STATE_DIR = Path("/run/mitmwall")
-LEGACY_RESOLVER_STATE_FILE = LEGACY_RESOLVER_STATE_DIR / "resolv-conf-state.json"
 
 
 @dataclass(frozen=True)

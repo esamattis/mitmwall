@@ -23,6 +23,7 @@ from typing import Literal, cast
 import tomllib
 
 from src.addon.constants import ADDON_CONFIG_FILE, WEB_RULES_FILE
+from src.systemd.migrations import clear_legacy_redirect_rules, run_startup_migrations
 from src.systemd.resolv_conf import configure_system_resolver, restore_system_resolver
 from src.utils.toml_helpers import is_toml_table
 
@@ -680,97 +681,6 @@ def remove_dns_redirect_rule(table_cmd: str, protocol: str) -> None:
         )
 
 
-def legacy_redirect_rule_args(
-    protocol: str,
-    dport: int,
-    target_port: int,
-    excluded_users: tuple[str, ...],
-    *,
-    exclude_loopback: bool = False,
-) -> list[str]:
-    """
-    Reconstruct an exact untagged redirect signature from an older helper.
-    """
-
-    rule_args = ["-p", protocol]
-    if exclude_loopback:
-        rule_args.extend(["!", "-o", "lo"])
-    for excluded_user in excluded_users:
-        rule_args.extend(["-m", "owner", "!", "--uid-owner", excluded_user])
-    rule_args.extend(
-        [
-            "--dport",
-            str(dport),
-            "-j",
-            "REDIRECT",
-            "--to-port",
-            str(target_port),
-        ]
-    )
-    return rule_args
-
-
-def remove_legacy_rule_copies(table_cmd: str, rule_args: list[str]) -> None:
-    """
-    Remove every exact copy of a historical rule from the NAT OUTPUT chain.
-    """
-
-    while True:
-        existing = probe_xtables(
-            table_cmd,
-            ["-t", "nat", "-C", "OUTPUT", *rule_args],
-            RULE_ABSENT_ERROR,
-        )
-        if existing is None:
-            break
-        _ = run_xtables(
-            table_cmd, ["-t", "nat", "-D", "OUTPUT", *rule_args]
-        )
-
-
-def clear_legacy_redirect_rules() -> None:
-    """
-    Remove untagged redirect forms installed by historical mitmwall helpers.
-
-    These exact signatures cover web rules before loopback, root, and APT
-    exclusions were added, plus DNS rules from before the APT exclusion.
-    """
-
-    for table_cmd in ("iptables", "ip6tables"):
-        for dport in (80, 443):
-            for excluded_users, exclude_loopback in (
-                ((USER,), False),
-                ((USER,), True),
-                (("0", USER), True),
-                (("0", USER, APT_USER), True),
-            ):
-                remove_legacy_rule_copies(
-                    table_cmd,
-                    legacy_redirect_rule_args(
-                        "tcp",
-                        dport,
-                        PROXY_PORT,
-                        excluded_users,
-                        exclude_loopback=exclude_loopback,
-                    ),
-                )
-
-        for protocol in ("udp", "tcp"):
-            for excluded_users in (
-                ("0", USER, "systemd-resolve"),
-                ("0", USER, "systemd-resolve", APT_USER),
-            ):
-                remove_legacy_rule_copies(
-                    table_cmd,
-                    legacy_redirect_rule_args(
-                        protocol,
-                        53,
-                        DNS_PORT,
-                        excluded_users,
-                    ),
-                )
-
-
 def add_ntp_filter_rules(table_cmd: str) -> None:
     """
     Allow installed Ubuntu time synchronization services to reach upstream NTP.
@@ -1310,7 +1220,6 @@ def add_rules(
         bypass_users = parse_bypass_users()
 
     clear_managed_redirect_rules()
-    clear_legacy_redirect_rules()
     enable_forwarding()
 
     # Every managed NAT rule is moved to the head.  Install generic redirects
@@ -1342,7 +1251,7 @@ def clear_rules() -> None:
     """
 
     clear_managed_redirect_rules()
-    clear_legacy_redirect_rules()
+    clear_legacy_redirect_rules(probe_xtables, run_xtables)
     clear_custom_rules()
 
     remove_redirect_rule("iptables", 80)
@@ -1683,6 +1592,7 @@ def main() -> None:
         custom_rules = parse_custom_rules()
         bypass_users = parse_bypass_users()
         try:
+            run_startup_migrations(probe_xtables, run_xtables)
             configure_system_resolver()
             ensure_web_rules_file()
             add_rules(custom_rules, bypass_users)
