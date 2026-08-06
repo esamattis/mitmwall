@@ -543,7 +543,11 @@ class ForwardingStateTests(unittest.TestCase):
         hook.add_forwarding_guards(hook.ForwardingState(0, 1, 1))
 
         mock_place.assert_called_once_with(
-            Rule("filter", "FORWARD", tuple(hook.forward_guard_rule()))
+            Rule(
+                table="filter",
+                chain="FORWARD",
+                args=tuple(hook.forward_guard_rule()),
+            )
         )
 
     def test_snapshot_permissions_are_root_only(self) -> None:
@@ -591,7 +595,7 @@ class PlaceRuleFirstTests(unittest.TestCase):
                 ]
 
                 Iptables(table_cmd).ensure_first(
-                    Rule("filter", "OUTPUT", tuple(rule))
+                    Rule(table="filter", chain="OUTPUT", args=tuple(rule))
                 )
 
                 self.assertEqual(
@@ -661,7 +665,7 @@ class PlaceRuleFirstTests(unittest.TestCase):
         ]
 
         Iptables("iptables").ensure_first(
-            Rule("nat", "OUTPUT", ("-j", "REDIRECT"))
+            Rule(table="nat", chain="OUTPUT", args=("-j", "REDIRECT"))
         )
 
         commands = [
@@ -845,7 +849,7 @@ class OutputFilterConntrackTests(unittest.TestCase):
             commands,
         )
         mock_place.assert_called_once_with(
-            Rule("filter", "OUTPUT", ("-j", hook.CHAIN))
+            Rule(table="filter", chain="OUTPUT", args=("-j", hook.CHAIN))
         )
 
 
@@ -1086,21 +1090,21 @@ class AddNatBypassRuleTests(unittest.TestCase):
 
         mock_ensure.assert_called_once_with(
             Rule(
-                "nat",
-                "OUTPUT",
-                (
-                "-p",
-                "tcp",
-                "-d",
-                "10.0.0.0/8",
-                "--dport",
-                "443",
-                "-m",
-                "comment",
-                "--comment",
-                "mitmwall-custom",
-                "-j",
-                "ACCEPT",
+                table="nat",
+                chain="OUTPUT",
+                args=(
+                    "-p",
+                    "tcp",
+                    "-d",
+                    "10.0.0.0/8",
+                    "--dport",
+                    "443",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    "mitmwall-custom",
+                    "-j",
+                    "ACCEPT",
                 ),
             )
         )
@@ -1448,8 +1452,11 @@ class EnsureWebRulesFileTests(unittest.TestCase):
     Verify ensure_web_rules_file creates the file and sets permissions.
     """
 
-    @patch("src.systemd.hook.subprocess.run")
-    def test_creates_file_when_missing(self, _mock_run: MagicMock) -> None:
+    @patch("src.systemd.hook.grp.getgrnam")
+    @patch("src.systemd.hook.os.chown")
+    def test_creates_file_when_missing(
+        self, _mock_chown: MagicMock, _mock_getgrnam: MagicMock
+    ) -> None:
         """
         The web rules file is created with an empty allow list when missing.
         """
@@ -1462,8 +1469,11 @@ class EnsureWebRulesFileTests(unittest.TestCase):
             self.assertTrue(path.exists())
             self.assertEqual(path.read_text(encoding="utf-8"), "# no custom rules from mitmweb\n")
 
-    @patch("src.systemd.hook.subprocess.run")
-    def test_does_not_overwrite_existing_file(self, _mock_run: MagicMock) -> None:
+    @patch("src.systemd.hook.grp.getgrnam")
+    @patch("src.systemd.hook.os.chown")
+    def test_does_not_overwrite_existing_file(
+        self, _mock_chown: MagicMock, _mock_getgrnam: MagicMock
+    ) -> None:
         """
         An existing web rules file is left untouched.
         """
@@ -1476,20 +1486,24 @@ class EnsureWebRulesFileTests(unittest.TestCase):
 
             self.assertEqual(path.read_text(encoding="utf-8"), "existing content")
 
-    @patch("src.systemd.hook.subprocess.run")
-    def test_runs_chown_and_chmod(self, mock_run: MagicMock) -> None:
+    @patch("src.systemd.hook.grp.getgrnam")
+    @patch("src.systemd.hook.os.chown")
+    def test_sets_ownership_and_permissions(
+        self, mock_chown: MagicMock, mock_getgrnam: MagicMock
+    ) -> None:
         """
         Ownership and permissions are set so the mitmwall user can write the file.
         """
 
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "2-web.toml"
+            mock_getgrnam.configure_mock(return_value=MagicMock(gr_gid=123))
             with patch("src.systemd.hook.WEB_RULES_FILE", path):
                 hook.ensure_web_rules_file()
 
-            commands = [call[0][0] for call in mock_run.call_args_list]
-            self.assertIn(["chown", "root:mitmwall", str(path)], commands)
-            self.assertIn(["chmod", "660", str(path)], commands)
+            mock_getgrnam.assert_called_once_with(hook.USER)
+            mock_chown.assert_called_once_with(path, 0, 123)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o660)
 
 
 class SystemResolverTests(unittest.TestCase):

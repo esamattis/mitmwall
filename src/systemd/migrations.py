@@ -58,7 +58,9 @@ def remove_legacy_rule_copies(
 ) -> None:
     """Remove every exact copy of a historical rule from the NAT OUTPUT chain."""
 
-    firewall.remove_all(Rule("nat", "OUTPUT", tuple(rule_args)))
+    firewall.remove_all(
+        Rule(table="nat", chain="OUTPUT", args=tuple(rule_args))
+    )
 
 
 def clear_legacy_redirect_rules(firewalls: Sequence[Iptables]) -> None:

@@ -15,7 +15,7 @@ RULE_ABSENT_ERROR = "Bad rule (does a matching rule exist in that chain?)."
 CHAIN_ABSENT_ERROR = "No chain/target/match by that name."
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class Rule:
     """Describe an exact rule in an iptables chain."""
 

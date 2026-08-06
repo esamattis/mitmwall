@@ -7,6 +7,7 @@ bypass rules.  Called by the systemd unit as ExecStartPre (start) and
 ExecStopPost (stop).
 """
 
+import grp
 import ipaddress
 import json
 import logging
@@ -269,11 +270,19 @@ def add_forwarding_guards(state: ForwardingState) -> None:
 
     if state.ipv4_forwarding == 0:
         IPV4.ensure_first(
-            Rule("filter", "FORWARD", tuple(forward_guard_rule()))
+            Rule(
+                table="filter",
+                chain="FORWARD",
+                args=tuple(forward_guard_rule()),
+            )
         )
     if state.ipv6_forwarding == 0:
         IPV6.ensure_first(
-            Rule("filter", "FORWARD", tuple(forward_guard_rule()))
+            Rule(
+                table="filter",
+                chain="FORWARD",
+                args=tuple(forward_guard_rule()),
+            )
         )
 
 
@@ -283,7 +292,11 @@ def remove_forwarding_guard(firewall: Iptables) -> None:
     """
 
     firewall.remove_all(
-        Rule("filter", "FORWARD", tuple(forward_guard_rule()))
+        Rule(
+            table="filter",
+            chain="FORWARD",
+            args=tuple(forward_guard_rule()),
+        )
     )
 
 
@@ -398,9 +411,9 @@ def add_redirect_rule(
 
     firewall.ensure_first(
         Rule(
-            "nat",
-            "OUTPUT",
-            (
+            table="nat",
+            chain="OUTPUT",
+            args=(
                 "-p",
                 "tcp",
                 "!",
@@ -431,9 +444,9 @@ def remove_redirect_rule(firewall: Iptables, dport: int) -> None:
 
     firewall.remove_all(
         Rule(
-            "nat",
-            "OUTPUT",
-            (
+            table="nat",
+            chain="OUTPUT",
+            args=(
                 "-p",
                 "tcp",
                 "!",
@@ -478,9 +491,9 @@ def add_dns_redirect_rule(
 
     firewall.ensure_first(
         Rule(
-            "nat",
-            "OUTPUT",
-            (
+            table="nat",
+            chain="OUTPUT",
+            args=(
                 "-p",
                 protocol,
                 *owner_exclusion_args(
@@ -508,9 +521,9 @@ def remove_dns_redirect_rule(firewall: Iptables, protocol: str) -> None:
 
     firewall.remove_all(
         Rule(
-            "nat",
-            "OUTPUT",
-            (
+            table="nat",
+            chain="OUTPUT",
+            args=(
                 "-p",
                 protocol,
                 "-m",
@@ -558,20 +571,16 @@ def add_ntp_filter_rules(firewall: Iptables) -> None:
     """
 
     for ntp_user in ("systemd-timesync", "_chrony", "ntp"):
-        result = subprocess.run(
-            ["id", "-u", ntp_user],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
+        try:
+            ntp_uid = str(pwd.getpwnam(ntp_user).pw_uid)
+        except KeyError:
             continue
-        ntp_uid = result.stdout.strip()
         # Allow NTP synchronization traffic.
         firewall.append(
             Rule(
-                "filter",
-                CHAIN,
-                (
+                table="filter",
+                chain=CHAIN,
+                args=(
                     "-p",
                     "udp",
                     "--dport",
@@ -589,9 +598,9 @@ def add_ntp_filter_rules(firewall: Iptables) -> None:
         # add_ntp_dns_bypass_rule) to actually leave the host.
         firewall.append(
             Rule(
-                "filter",
-                CHAIN,
-                (
+                table="filter",
+                chain=CHAIN,
+                args=(
                     "-p",
                     "udp",
                     "--dport",
@@ -607,9 +616,9 @@ def add_ntp_filter_rules(firewall: Iptables) -> None:
         )
         firewall.append(
             Rule(
-                "filter",
-                CHAIN,
-                (
+                table="filter",
+                chain=CHAIN,
+                args=(
                     "-p",
                     "tcp",
                     "--dport",
@@ -637,21 +646,17 @@ def add_ntp_dns_bypass_rule(firewall: Iptables, protocol: str) -> None:
     """
 
     for ntp_user in ("systemd-timesync", "_chrony", "ntp"):
-        result = subprocess.run(
-            ["id", "-u", ntp_user],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
+        try:
+            ntp_uid = str(pwd.getpwnam(ntp_user).pw_uid)
+        except KeyError:
             continue
-        ntp_uid = result.stdout.strip()
         # Move the bypass to the top on every start so it remains ahead of both
         # generic redirects and unrelated rules.
         firewall.ensure_first(
             Rule(
-                "nat",
-                "OUTPUT",
-                (
+                table="nat",
+                chain="OUTPUT",
+                args=(
                     "-p",
                     protocol,
                     "-m",
@@ -673,19 +678,15 @@ def remove_ntp_dns_bypass_rule(firewall: Iptables, protocol: str) -> None:
     """
 
     for ntp_user in ("systemd-timesync", "_chrony", "ntp"):
-        result = subprocess.run(
-            ["id", "-u", ntp_user],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
+        try:
+            ntp_uid = str(pwd.getpwnam(ntp_user).pw_uid)
+        except KeyError:
             continue
-        ntp_uid = result.stdout.strip()
         firewall.remove_all(
             Rule(
-                "nat",
-                "OUTPUT",
-                (
+                table="nat",
+                chain="OUTPUT",
+                args=(
                     "-p",
                     protocol,
                     "-m",
@@ -717,7 +718,7 @@ def add_output_filter(
     def append_output(*args: str) -> None:
         """Append one rule to the managed output chain."""
 
-        firewall.append(Rule("filter", CHAIN, args))
+        firewall.append(Rule(table="filter", chain=CHAIN, args=args))
 
     firewall.ensure_chain("filter", CHAIN)
 
@@ -891,7 +892,9 @@ def add_output_filter(
 
     # Reattach at the head on every start.  An earlier terminal rule in OUTPUT
     # would otherwise bypass the fail-closed managed chain.
-    firewall.ensure_first(Rule("filter", "OUTPUT", ("-j", CHAIN)))
+    firewall.ensure_first(
+        Rule(table="filter", chain="OUTPUT", args=("-j", CHAIN))
+    )
 
 
 def remove_output_filter(firewall: Iptables) -> None:
@@ -907,7 +910,9 @@ def remove_output_filter(firewall: Iptables) -> None:
     if not firewall.chain_exists("filter", CHAIN):
         return
 
-    firewall.remove_all(Rule("filter", "OUTPUT", ("-j", CHAIN)))
+    firewall.remove_all(
+        Rule(table="filter", chain="OUTPUT", args=("-j", CHAIN))
+    )
     firewall.flush_chain("filter", CHAIN)
     firewall.delete_chain("filter", CHAIN)
 
@@ -928,16 +933,9 @@ def ensure_web_rules_file() -> None:
             "# no custom rules from mitmweb\n", encoding="utf-8"
         )
 
-    _ = subprocess.run(
-        ["chown", "root:mitmwall", str(WEB_RULES_FILE)],
-        capture_output=True,
-        check=True,
-    )
-    _ = subprocess.run(
-        ["chmod", "660", str(WEB_RULES_FILE)],
-        capture_output=True,
-        check=True,
-    )
+    group_id = grp.getgrnam(USER).gr_gid
+    os.chown(WEB_RULES_FILE, 0, group_id)
+    WEB_RULES_FILE.chmod(0o660)
 
 
 def add_rules(
@@ -1130,9 +1128,9 @@ def add_rule(firewall: Iptables, chain: str, network: str, port: int) -> None:
     drop_line = find_drop_line_number(lines)
 
     custom_rule = Rule(
-        "filter",
-        chain,
-        (
+        table="filter",
+        chain=chain,
+        args=(
             "-p",
             "tcp",
             "-d",
@@ -1162,9 +1160,9 @@ def add_nat_bypass_rule(firewall: Iptables, network: str, port: int) -> None:
 
     firewall.ensure_first(
         Rule(
-            "nat",
-            "OUTPUT",
-            (
+            table="nat",
+            chain="OUTPUT",
+            args=(
                 "-p",
                 "tcp",
                 "-d",
