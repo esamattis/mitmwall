@@ -47,6 +47,11 @@ jobs:
           docker exec mitmwall-integration systemctl --no-pager status
           exit 1
 
+      - name: Load netfilter kernel modules
+        run: |
+          for module in iptable_nat ip6table_nat xt_REDIRECT xt_owner xt_conntrack xt_comment; do
+            docker exec mitmwall-integration modprobe "$module"
+          done
 
       - name: Run integration tests
         run: docker exec --user ci --workdir /workspace mitmwall-integration ./integration_tests.sh
