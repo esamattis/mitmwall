@@ -26,16 +26,28 @@ jobs:
           sudo chmod 0440 /etc/sudoers.d/ci
           sudo chmod o+x /home/runner
 
+          # The Actions agent also runs as runner and must retain unrestricted
+          # egress while mitmwall filters the separate ci user. Inject this only
+          # in CI because local test hosts usually have no runner account, and
+          # mitmwall rejects configured bypass users that do not exist.
           sed -i 's/bypass_users = \[/bypass_users = ["runner", /' tests/integration/integration-test-config.toml
 
       - name: Prepare firewall backend
         run: |
+          # Docker concurrently manages the host firewall and can race mitmwall's
+          # OUTPUT-chain updates or hold the shared xtables lock. Neither Docker
+          # nor containerd is needed after checkout, so stop them for this job.
           sudo systemctl stop docker.service docker.socket containerd.service
 
+          # GitHub's runner image does not guarantee these netfilter modules are
+          # already loaded. mitmwall needs them for NAT, redirects, owner-based
+          # bypasses, connection tracking, and its managed-rule comments.
           for module in iptable_nat ip6table_nat xt_REDIRECT xt_owner xt_conntrack xt_comment; do
             sudo modprobe "$module"
           done
 
+          # Exercise Ubuntu's default nftables-backed iptables implementation and
+          # avoid depending on whichever alternative the runner image selected.
           sudo update-alternatives --set iptables /usr/sbin/iptables-nft
           sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
 
