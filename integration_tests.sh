@@ -23,6 +23,19 @@ fi
 
 sudo ./dev-install.sh
 
+# The suite stops and restarts mitmwall to verify forwarding-state restoration.
+# On otherwise-empty nftables hosts, removing the last rule can discard a table
+# and make an immediate iptables-nft probe of the deleted chain fail as
+# "incompatible" instead of simply absent. Keep one unrelated loopback rule in
+# each exercised table so the restart tests cover mitmwall's lifecycle rather
+# than that empty-table frontend edge case. Add these only after installation so
+# install.sh still exercises stale-rule cleanup against the host's original state.
+keepalive_comment=mitmwall-integration-table-keepalive
+for table_command in iptables ip6tables; do
+    sudo "$table_command" -w 10 -t filter -A OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT
+    sudo "$table_command" -w 10 -t nat -A OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT
+done
+
 state_dir=/run/mitmwall
 state_file=$state_dir/forwarding-state.json
 failure_output=$(mktemp)
@@ -32,6 +45,13 @@ cleanup() {
         sudo rm -f "$state_file"
     fi
     sudo systemctl start mitmwall.service >/dev/null 2>&1 || true
+    # Remove the temporary rules after restoring the service. Its managed rules
+    # now keep the tables initialized, so deleting the keepalives cannot recreate
+    # the empty-table condition during cleanup.
+    for table_command in iptables ip6tables; do
+        sudo "$table_command" -w 10 -t filter -D OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT >/dev/null 2>&1 || true
+        sudo "$table_command" -w 10 -t nat -D OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT >/dev/null 2>&1 || true
+    done
     rm -f "$failure_output"
 }
 trap cleanup EXIT

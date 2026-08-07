@@ -118,7 +118,7 @@ class Iptables:
         """Return whether a chain exists."""
 
         return (
-            self.probe(["-t", table, "-L", chain], CHAIN_ABSENT_ERROR)
+            self.probe(["-t", table, "-S", chain], CHAIN_ABSENT_ERROR)
             is not None
         )
 
@@ -144,12 +144,13 @@ class Iptables:
     ) -> tuple[str, ...] | None:
         """List rendered rules, or return None when the chain is absent."""
 
+        if not self.chain_exists(table, chain):
+            return None
+
         args = ["-t", table, "-L", chain]
         if line_numbers:
             args.append("--line-numbers")
-        result = self.probe(args, CHAIN_ABSENT_ERROR)
-        if result is None:
-            return None
+        result = self.run(args)
         return tuple(result.stdout.splitlines())
 
     def remove_by_comment(self, table: Table, chain: str, comment: str) -> None:
