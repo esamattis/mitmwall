@@ -24,6 +24,7 @@ jobs:
           sudo useradd --create-home --shell /bin/bash ci
           printf '%s\n' 'ci ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/ci >/dev/null
           sudo chmod 0440 /etc/sudoers.d/ci
+          sudo chmod o+x /home/runner
 
           sed -i 's/bypass_users = \[/bypass_users = ["runner", /' tests/integration/integration-test-config.toml
 
