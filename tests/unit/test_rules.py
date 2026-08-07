@@ -393,7 +393,7 @@ pathname_pattern = ["/headers", "/status/:code"]
         self.assertEqual(rule.pathname_filters[0].kind, "pathname_pattern")
         self.assertEqual(rule.pathname_filters[1].kind, "pathname_pattern")
         self.assertTrue(rule.pathname_filters[0].matches("/headers"))
-        self.assertTrue(rule.pathname_filters[0].matches("/headers/"))
+        self.assertFalse(rule.pathname_filters[0].matches("/headers/"))
         self.assertFalse(rule.pathname_filters[0].matches("/status/200"))
         self.assertTrue(rule.pathname_filters[1].matches("/status/200"))
         self.assertFalse(rule.pathname_filters[1].matches("/other"))

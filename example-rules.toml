@@ -55,9 +55,12 @@
 #   - matching is done against the URL pathname only
 #   - query strings (`?foo=bar`) and fragments (`#section`) are ignored
 #   - for example, `/search?q=test` is matched as pathname `/search`
-#   - `:param` — matches exactly one path segment (no `/`).
-#   - `*wildcard` — matches one or more characters (spans `/`).
-#   - `{optional}` — optional group of tokens.
+#   - `:param` — named group matching exactly one path segment (no `/`).
+#   - `*` — unnamed wildcard matching zero or more characters (spans `/`).
+#   - `(regex)` / `:param(regex)` — unnamed or named regular-expression group.
+#   - `?`, `+`, and `*` after a group — optional or repeated matching.
+#   - `{tokens}` — group delimiter; add `?` to make it optional.
+#   - trailing slashes are strict; use `{/}?` to make one optional.
 # * Hostnames are normalized before matching (trimmed, trailing dot removed,
 #   lowercased).
 # * Exact `domain` rules do not match subdomains unless `include_subdomains = true`.

@@ -7,6 +7,7 @@ import unittest
 from src.addon.pathname_pattern import (
     GroupToken,
     ParamToken,
+    RegexToken,
     TextToken,
     WildcardToken,
     compile_pathname_pattern,
@@ -18,7 +19,7 @@ from src.addon.pathname_pattern import (
 
 class PathnamePatternTests(unittest.TestCase):
     """
-    Verify pathname pattern tokenization and regex compilation.
+    Verify pathname pattern tokenization and URLPattern-style compilation.
     """
 
     def test_parse_returns_text_and_parameter_tokens(self) -> None:
@@ -31,14 +32,24 @@ class PathnamePatternTests(unittest.TestCase):
             [TextToken("/users/"), ParamToken("id")],
         )
 
-    def test_parse_supports_wildcards_and_optional_groups(self) -> None:
+    def test_parse_supports_wildcards_and_delimited_groups(self) -> None:
         """
-        Parse wildcard tokens and nested optional groups.
+        Parse unnamed wildcard tokens inside delimited groups.
         """
 
         self.assertEqual(
-            parse_pathname_pattern_tokens("/files{/*path}"),
-            [TextToken("/files"), GroupToken([TextToken("/"), WildcardToken("path")])],
+            parse_pathname_pattern_tokens("/files{/*}"),
+            [TextToken("/files"), GroupToken([TextToken("/"), WildcardToken()])],
+        )
+
+    def test_parse_treats_text_after_wildcard_as_literal(self) -> None:
+        """
+        Treat wildcard suffix text as fixed text instead of a wildcard name.
+        """
+
+        self.assertEqual(
+            parse_pathname_pattern_tokens("/files/*path"),
+            [TextToken("/files/"), WildcardToken(), TextToken("path")],
         )
 
     def test_parse_supports_quoted_parameter_names(self) -> None:
@@ -49,6 +60,21 @@ class PathnamePatternTests(unittest.TestCase):
         self.assertEqual(
             parse_pathname_pattern_tokens('/users/:"user-id"'),
             [TextToken("/users/"), ParamToken("user-id")],
+        )
+
+    def test_parse_supports_regex_groups_and_modifiers(self) -> None:
+        """
+        Parse custom parameter regexes, unnamed regexes, and group modifiers.
+        """
+
+        self.assertEqual(
+            parse_pathname_pattern_tokens(r"/books/:id(\d+)?/(foo|bar)+"),
+            [
+                TextToken("/books/"),
+                ParamToken("id", r"\d+", "?"),
+                TextToken("/"),
+                RegexToken("foo|bar", "+"),
+            ],
         )
 
     def test_parse_treats_escaped_special_characters_as_literal_text(self) -> None:
@@ -77,20 +103,20 @@ class PathnamePatternTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unterminated quote"):
             _ = parse_pathname_pattern_tokens('/users/:"user-id')
 
-    def test_parse_rejects_unexpected_special_character(self) -> None:
+    def test_parse_rejects_nested_delimited_groups(self) -> None:
         """
-        Reject unsupported pattern syntax characters.
+        Reject nested group delimiters as required by URLPattern syntax.
         """
 
-        with self.assertRaisesRegex(ValueError, r"unexpected \+"):
-            _ = parse_pathname_pattern_tokens("/users/+")
+        with self.assertRaisesRegex(ValueError, "nested group delimiter"):
+            _ = parse_pathname_pattern_tokens("/users{{/me}?}")
 
     def test_flatten_expands_optional_group_including_omission(self) -> None:
         """
         Expand optional groups to both included and omitted sequences.
         """
 
-        tokens = parse_pathname_pattern_tokens("/users{/me}")
+        tokens = parse_pathname_pattern_tokens("/users{/me}?")
 
         self.assertEqual(
             flatten_pathname_pattern_tokens(tokens),
@@ -100,52 +126,71 @@ class PathnamePatternTests(unittest.TestCase):
             ],
         )
 
+    def test_flatten_keeps_unmodified_group_required(self) -> None:
+        """
+        Keep an unmodified delimited group in every flat sequence.
+        """
+
+        tokens = parse_pathname_pattern_tokens("/users{/me}")
+
+        self.assertEqual(
+            flatten_pathname_pattern_tokens(tokens),
+            [[TextToken("/users"), TextToken("/me")]],
+        )
+
     def test_flatten_rejects_too_many_optional_combinations(self) -> None:
         """
         Reject patterns that expand into too many optional combinations.
         """
 
-        pattern = "".join("{/a}" for _ in range(9))
+        pattern = "".join("{/a}?" for _ in range(9))
 
         with self.assertRaisesRegex(ValueError, "too many path combinations"):
             _ = flatten_pathname_pattern_tokens(parse_pathname_pattern_tokens(pattern))
 
     def test_tokens_to_regex_source_escapes_literal_text(self) -> None:
         """
-        Escape regex metacharacters in literal pathname text.
+        Escape text while translating parameters and wildcards to regex.
         """
 
         self.assertEqual(
             pathname_tokens_to_regex_source(
-                [TextToken("/file.+"), ParamToken("name"), WildcardToken("rest")]
+                [TextToken("/file.+"), ParamToken("name"), WildcardToken()]
             ),
-            r"/file\.\+([^/]+)(.+)",
+            r"/file\.\+(?:[^/]+?)(?:.*)",
         )
 
-    def test_compile_matches_optional_group_and_optional_trailing_slash(self) -> None:
+    def test_compile_requires_unmodified_delimited_group(self) -> None:
         """
-        Match both optional-group variants and permit a trailing slash.
+        Require a delimited group when it has no optional modifier.
         """
 
         pattern = compile_pathname_pattern("/users{/me}")
 
-        self.assertIsNotNone(pattern.fullmatch("/users"))
-        self.assertIsNotNone(pattern.fullmatch("/users/"))
         self.assertIsNotNone(pattern.fullmatch("/users/me"))
-        self.assertIsNotNone(pattern.fullmatch("/users/me/"))
-        self.assertIsNone(pattern.fullmatch("/users/me/extra"))
+        self.assertIsNone(pattern.fullmatch("/users"))
 
-    def test_compile_matches_path_without_variables(self) -> None:
+    def test_compile_matches_optional_delimited_group(self) -> None:
         """
-        Match an exact literal pathname pattern that does not define variables.
+        Match both variants when a delimited group has an optional modifier.
+        """
+
+        pattern = compile_pathname_pattern("/users{/me}?")
+
+        self.assertIsNotNone(pattern.fullmatch("/users"))
+        self.assertIsNotNone(pattern.fullmatch("/users/me"))
+        self.assertIsNone(pattern.fullmatch("/users/"))
+
+    def test_compile_matches_path_without_variables_strictly(self) -> None:
+        """
+        Match a literal pathname without adding an optional trailing slash.
         """
 
         pattern = compile_pathname_pattern("/registry/v1/latest/registry+json")
 
         self.assertIsNotNone(pattern.fullmatch("/registry/v1/latest/registry+json"))
-        self.assertIsNotNone(pattern.fullmatch("/registry/v1/latest/registry+json/"))
+        self.assertIsNone(pattern.fullmatch("/registry/v1/latest/registry+json/"))
         self.assertIsNone(pattern.fullmatch("/registry/v1/latest/registry-json"))
-        self.assertIsNone(pattern.fullmatch("/registry/v1/latest/registry+json/extra"))
 
     def test_compile_rejects_full_url_patterns(self) -> None:
         """
@@ -157,15 +202,18 @@ class PathnamePatternTests(unittest.TestCase):
                 "https://github.com/moonrepo/moon/git-upload-pack"
             )
 
-    def test_compile_requires_trailing_slash_when_pattern_ends_with_slash(self) -> None:
+    def test_compile_requires_explicit_trailing_slash(self) -> None:
         """
-        Preserve a required trailing slash when the pattern explicitly ends with one.
+        Match trailing slashes only when represented by the pattern.
         """
 
-        pattern = compile_pathname_pattern("/users/")
+        without_slash = compile_pathname_pattern("/users")
+        with_slash = compile_pathname_pattern("/users/")
 
-        self.assertIsNotNone(pattern.fullmatch("/users/"))
-        self.assertIsNone(pattern.fullmatch("/users"))
+        self.assertIsNotNone(without_slash.fullmatch("/users"))
+        self.assertIsNone(without_slash.fullmatch("/users/"))
+        self.assertIsNotNone(with_slash.fullmatch("/users/"))
+        self.assertIsNone(with_slash.fullmatch("/users"))
 
     def test_compile_matches_params_but_not_empty_segments(self) -> None:
         """
@@ -177,16 +225,77 @@ class PathnamePatternTests(unittest.TestCase):
         self.assertIsNotNone(pattern.fullmatch("/users/123"))
         self.assertIsNone(pattern.fullmatch("/users/"))
 
-    def test_compile_matches_wildcards_across_multiple_segments(self) -> None:
+    def test_compile_applies_automatic_prefix_to_optional_param(self) -> None:
         """
-        Match wildcard tokens across one or more path segments.
+        Make the preceding slash optional with an optional pathname parameter.
+        """
+
+        pattern = compile_pathname_pattern("/books/:id?")
+
+        self.assertIsNotNone(pattern.fullmatch("/books"))
+        self.assertIsNotNone(pattern.fullmatch("/books/123"))
+        self.assertIsNone(pattern.fullmatch("/books/"))
+
+    def test_compile_repeats_parameter_with_automatic_prefix(self) -> None:
+        """
+        Repeat a parameter together with its pathname slash prefix.
+        """
+
+        one_or_more = compile_pathname_pattern("/books/:id+")
+        zero_or_more = compile_pathname_pattern("/authors/:id*")
+
+        self.assertIsNotNone(one_or_more.fullmatch("/books/123/456"))
+        self.assertIsNone(one_or_more.fullmatch("/books"))
+        self.assertIsNotNone(zero_or_more.fullmatch("/authors"))
+        self.assertIsNotNone(zero_or_more.fullmatch("/authors/123/456"))
+        self.assertIsNone(zero_or_more.fullmatch("/authors/"))
+
+    def test_compile_matches_bare_wildcard_zero_or_more_times(self) -> None:
+        """
+        Match a JavaScript URLPattern wildcard across zero or more characters.
+        """
+
+        pattern = compile_pathname_pattern("/login/*")
+
+        self.assertIsNone(pattern.fullmatch("/login"))
+        self.assertIsNotNone(pattern.fullmatch("/login/"))
+        self.assertIsNotNone(pattern.fullmatch("/login/callback"))
+        self.assertIsNotNone(pattern.fullmatch("/login/oauth/callback"))
+
+    def test_compile_treats_wildcard_suffix_as_literal(self) -> None:
+        """
+        Require fixed text written immediately after a bare wildcard.
         """
 
         pattern = compile_pathname_pattern("/files/*path")
 
-        self.assertIsNotNone(pattern.fullmatch("/files/a"))
-        self.assertIsNotNone(pattern.fullmatch("/files/a/b/c"))
-        self.assertIsNone(pattern.fullmatch("/files/"))
+        self.assertIsNotNone(pattern.fullmatch("/files/path"))
+        self.assertIsNotNone(pattern.fullmatch("/files/nested/path"))
+        self.assertIsNone(pattern.fullmatch("/files/file"))
+
+    def test_compile_matches_custom_and_unnamed_regex_groups(self) -> None:
+        """
+        Apply custom regex matching to named and unnamed groups.
+        """
+
+        named = compile_pathname_pattern(r"/books/:id(\d+)")
+        unnamed = compile_pathname_pattern("/(foo|bar)")
+
+        self.assertIsNotNone(named.fullmatch("/books/123"))
+        self.assertIsNone(named.fullmatch("/books/abc"))
+        self.assertIsNotNone(unnamed.fullmatch("/foo"))
+        self.assertIsNotNone(unnamed.fullmatch("/bar"))
+        self.assertIsNone(unnamed.fullmatch("/baz"))
+
+    def test_compile_can_make_trailing_slash_optional_explicitly(self) -> None:
+        """
+        Support URLPattern's explicit optional trailing slash idiom.
+        """
+
+        pattern = compile_pathname_pattern("/books{/}?")
+
+        self.assertIsNotNone(pattern.fullmatch("/books"))
+        self.assertIsNotNone(pattern.fullmatch("/books/"))
 
 
 if __name__ == "__main__":
