@@ -46,6 +46,13 @@ jobs:
           docker exec mitmwall-integration systemctl --no-pager status
           exit 1
 
+      - name: Keep firewall tables initialized
+        run: |
+          for command in iptables ip6tables; do
+            docker exec mitmwall-integration "$command" -w 10 -t filter -A OUTPUT -o lo -j ACCEPT
+            docker exec mitmwall-integration "$command" -w 10 -t nat -A OUTPUT -o lo -j ACCEPT
+          done
+
       - name: Run integration tests
         run: docker exec --user ci --workdir /workspace mitmwall-integration ./integration_tests.sh
 
