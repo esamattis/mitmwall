@@ -23,6 +23,12 @@ fi
 
 sudo ./dev-install.sh
 
+keepalive_comment=mitmwall-integration-table-keepalive
+for table_command in iptables ip6tables; do
+    sudo "$table_command" -w 10 -t filter -A OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT
+    sudo "$table_command" -w 10 -t nat -A OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT
+done
+
 state_dir=/run/mitmwall
 state_file=$state_dir/forwarding-state.json
 failure_output=$(mktemp)
@@ -32,6 +38,10 @@ cleanup() {
         sudo rm -f "$state_file"
     fi
     sudo systemctl start mitmwall.service >/dev/null 2>&1 || true
+    for table_command in iptables ip6tables; do
+        sudo "$table_command" -w 10 -t filter -D OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT >/dev/null 2>&1 || true
+        sudo "$table_command" -w 10 -t nat -D OUTPUT -o lo -m comment --comment "$keepalive_comment" -j ACCEPT >/dev/null 2>&1 || true
+    done
     rm -f "$failure_output"
 }
 trap cleanup EXIT
