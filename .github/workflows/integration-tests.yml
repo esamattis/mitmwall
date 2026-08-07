@@ -29,7 +29,6 @@ jobs:
             --name mitmwall-integration \
             --privileged \
             --cgroupns=host \
-            --dns 127.0.0.53 \
             --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
             --volume "$GITHUB_WORKSPACE:/workspace:ro" \
             mitmwall-integration
