@@ -57,6 +57,7 @@ jobs:
           docker exec mitmwall-integration systemctl --no-pager status mitmwall.service || true
           docker exec mitmwall-integration journalctl --unit mitmwall.service --no-pager || true
           docker exec mitmwall-integration iptables --version || true
+          docker exec mitmwall-integration iptables -w 10 -t nat -C OUTPUT -p tcp -m owner ! --uid-owner mitmwall --dport 80 -j REDIRECT --to-port 58080 || true
           docker exec mitmwall-integration iptables -w 10 -t filter -L MITMWALL_OUTPUT || true
           docker exec mitmwall-integration ip6tables -w 10 -t filter -L MITMWALL_OUTPUT || true
 
