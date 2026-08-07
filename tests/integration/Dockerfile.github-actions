@@ -26,4 +26,4 @@ RUN install -d /etc/systemd/resolved.conf.d \
 
 STOPSIGNAL SIGRTMIN+3
 
-CMD ["/sbin/init"]
+CMD ["/usr/lib/systemd/systemd"]
