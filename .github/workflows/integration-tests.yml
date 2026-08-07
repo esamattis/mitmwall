@@ -19,62 +19,27 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Build systemd test image
-        run: docker build --tag mitmwall-integration --file tests/integration/Dockerfile.github-actions .
-
-      - name: Start isolated test system
+      - name: Prepare isolated test user
         run: |
-          docker network create mitmwall-integration
-          docker run \
-            --detach \
-            --name mitmwall-integration \
-            --network mitmwall-integration \
-            --privileged \
-            --cgroupns=host \
-            --volume /lib/modules:/lib/modules:ro \
-            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
-            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
-            mitmwall-integration
+          sudo useradd --create-home --shell /bin/bash ci
+          printf '%s\n' 'ci ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/ci >/dev/null
+          sudo chmod 0440 /etc/sudoers.d/ci
 
-          for attempt in $(seq 1 100); do
-            state=$(docker exec mitmwall-integration systemctl is-system-running 2>/dev/null || true)
-            if [ "$state" = running ] || [ "$state" = degraded ]; then
-              exit 0
-            fi
-            sleep 0.2
-          done
-
-          docker exec mitmwall-integration systemctl --no-pager status
-          exit 1
-
-      - name: Load netfilter kernel modules
-        run: |
-          for module in iptable_nat ip6table_nat xt_REDIRECT xt_owner xt_conntrack xt_comment; do
-            docker exec mitmwall-integration modprobe "$module"
-          done
-
-      - name: Initialize firewall tables
-        run: |
-          for command in iptables ip6tables; do
-            docker exec mitmwall-integration "$command" -w 10 -t filter -A OUTPUT -o lo -j ACCEPT
-            docker exec mitmwall-integration "$command" -w 10 -t nat -A OUTPUT -o lo -j ACCEPT
-          done
+          sed -i 's/bypass_users = \[/bypass_users = ["runner", /' tests/integration/integration-test-config.toml
 
       - name: Run integration tests
-        run: docker exec --user ci --workdir /workspace mitmwall-integration ./integration_tests.sh
+        run: sudo --user ci -- ./integration_tests.sh
 
       - name: Show service diagnostics
         if: failure()
         run: |
-          docker exec mitmwall-integration systemctl --no-pager status mitmwall.service || true
-          docker exec mitmwall-integration journalctl --unit mitmwall.service --no-pager || true
-          docker exec mitmwall-integration iptables --version || true
-          docker exec mitmwall-integration iptables -w 10 -t nat -C OUTPUT -p tcp -m owner ! --uid-owner mitmwall --dport 80 -j REDIRECT --to-port 58080 || true
-          docker exec mitmwall-integration iptables -w 10 -t filter -L MITMWALL_OUTPUT || true
-          docker exec mitmwall-integration ip6tables -w 10 -t filter -L MITMWALL_OUTPUT || true
+          sudo systemctl --no-pager status mitmwall.service || true
+          sudo journalctl --unit mitmwall.service --no-pager || true
+          sudo iptables -w 10 -t filter -S || true
+          sudo ip6tables -w 10 -t filter -S || true
 
-      - name: Stop isolated test system
+      - name: Stop mitmwall
         if: always()
         run: |
-          docker rm --force mitmwall-integration || true
-          docker network rm mitmwall-integration || true
+          sudo systemctl stop mitmwall.service || true
+          sudo /opt/mitmwall/hook.py stop || true
