@@ -1048,6 +1048,7 @@ class RemoveCustomRulesTests(unittest.TestCase):
         Rules tagged with the mitmwall-custom comment are removed by line number.
         """
 
+        chain_exists = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
         list_result = subprocess.CompletedProcess(
             args=[],
             returncode=0,
@@ -1056,13 +1057,19 @@ class RemoveCustomRulesTests(unittest.TestCase):
         delete_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="")
         empty_list = subprocess.CompletedProcess(args=[], returncode=0, stdout="1 DROP")
 
-        mock_run.side_effect = [list_result, delete_result, empty_list]
+        mock_run.side_effect = [
+            chain_exists,
+            list_result,
+            delete_result,
+            chain_exists,
+            empty_list,
+        ]
 
         hook.remove_custom_rules_from_chain(
             Iptables("iptables"), "MITMWALL_OUTPUT"
         )
 
-        delete_call = mock_run.call_args_list[1]
+        delete_call = mock_run.call_args_list[2]
         self.assertEqual(delete_call[0][0], [
             "iptables",
             "-w",
