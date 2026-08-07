@@ -875,8 +875,10 @@ def remove_output_filter(firewall: Iptables) -> None:
     firewall.remove_all(
         Rule(table="filter", chain="OUTPUT", args=("-j", CHAIN))
     )
+    # Keep the empty private chain so iptables-nft can reuse it on restart.
+    # Deleting and immediately probing a user chain can leave an incompatible
+    # nftables tombstone on Ubuntu 24.04 even though no managed rules remain.
     firewall.flush_chain("filter", CHAIN)
-    firewall.delete_chain("filter", CHAIN)
 
 
 def ensure_web_rules_file() -> None:
