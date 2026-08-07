@@ -7,9 +7,53 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   integration-tests:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
     steps:
-      - name: Placeholder
-        run: true
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build systemd test image
+        run: docker build --tag mitmwall-integration --file tests/integration/Dockerfile.github-actions .
+
+      - name: Start isolated test system
+        run: |
+          docker run \
+            --detach \
+            --name mitmwall-integration \
+            --privileged \
+            --cgroupns=host \
+            --dns 127.0.0.53 \
+            --volume /sys/fs/cgroup:/sys/fs/cgroup:rw \
+            --volume "$GITHUB_WORKSPACE:/workspace:ro" \
+            mitmwall-integration
+
+          for attempt in $(seq 1 100); do
+            state=$(docker exec mitmwall-integration systemctl is-system-running 2>/dev/null || true)
+            if [ "$state" = running ] || [ "$state" = degraded ]; then
+              exit 0
+            fi
+            sleep 0.2
+          done
+
+          docker exec mitmwall-integration systemctl --no-pager status
+          exit 1
+
+      - name: Run integration tests
+        run: docker exec --user ci --workdir /workspace mitmwall-integration ./integration_tests.sh
+
+      - name: Show service diagnostics
+        if: failure()
+        run: |
+          docker exec mitmwall-integration systemctl --no-pager status mitmwall.service || true
+          docker exec mitmwall-integration journalctl --unit mitmwall.service --no-pager || true
+
+      - name: Stop isolated test system
+        if: always()
+        run: docker rm --force mitmwall-integration || true

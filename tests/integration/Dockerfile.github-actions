@@ -1,0 +1,29 @@
+FROM ubuntu:24.04
+
+ENV container=docker
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        curl \
+        iptables \
+        openssl \
+        procps \
+        python3 \
+        sudo \
+        systemd \
+        systemd-resolved \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash ci \
+    && printf '%s\n' 'ci ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/ci \
+    && chmod 0440 /etc/sudoers.d/ci
+
+RUN install -d /etc/systemd/resolved.conf.d \
+    && printf '%s\n' '[Resolve]' 'DNS=127.0.0.11' > /etc/systemd/resolved.conf.d/docker.conf
+
+STOPSIGNAL SIGRTMIN+3
+
+CMD ["/sbin/init"]
