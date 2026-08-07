@@ -19,6 +19,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Run unit tests and type checks
+        run: ./test.sh
+
       - name: Prepare isolated test user
         run: |
           sudo useradd --create-home --shell /bin/bash ci
