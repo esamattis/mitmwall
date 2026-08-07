@@ -29,6 +29,8 @@ jobs:
 
       - name: Prepare firewall backend
         run: |
+          sudo systemctl stop docker.service docker.socket containerd.service
+
           for module in iptable_nat ip6table_nat xt_REDIRECT xt_owner xt_conntrack xt_comment; do
             sudo modprobe "$module"
           done
