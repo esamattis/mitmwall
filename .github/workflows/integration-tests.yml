@@ -27,6 +27,20 @@ jobs:
 
           sed -i 's/bypass_users = \[/bypass_users = ["runner", /' tests/integration/integration-test-config.toml
 
+      - name: Prepare firewall backend
+        run: |
+          for module in iptable_nat ip6table_nat xt_REDIRECT xt_owner xt_conntrack xt_comment; do
+            sudo modprobe "$module"
+          done
+
+          sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
+          sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+
+          for command in iptables ip6tables; do
+            sudo "$command" -w 10 -t filter -A OUTPUT -o lo -j ACCEPT
+            sudo "$command" -w 10 -t nat -A OUTPUT -o lo -j ACCEPT
+          done
+
       - name: Run integration tests
         run: sudo --user ci -- ./integration_tests.sh
 
