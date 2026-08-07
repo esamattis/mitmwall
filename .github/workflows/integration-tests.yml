@@ -51,6 +51,10 @@ jobs:
         run: |
           sudo systemctl --no-pager status mitmwall.service || true
           sudo journalctl --unit mitmwall.service --no-pager || true
+          sudo iptables --version || true
+          sudo iptables -w 10 -t nat -S || true
+          sudo iptables -w 10 -t nat -C OUTPUT -p tcp -m owner ! --uid-owner mitmwall --dport 80 -j REDIRECT --to-port 58080 || true
+          lsmod | grep -E 'iptable_nat|ip6table_nat|xt_REDIRECT|xt_owner' || true
           sudo iptables -w 10 -t filter -S || true
           sudo ip6tables -w 10 -t filter -S || true
 
