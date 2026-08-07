@@ -54,6 +54,9 @@ jobs:
         run: |
           docker exec mitmwall-integration systemctl --no-pager status mitmwall.service || true
           docker exec mitmwall-integration journalctl --unit mitmwall.service --no-pager || true
+          docker exec mitmwall-integration iptables --version || true
+          docker exec mitmwall-integration iptables -w 10 -t filter -L MITMWALL_OUTPUT || true
+          docker exec mitmwall-integration ip6tables -w 10 -t filter -L MITMWALL_OUTPUT || true
 
       - name: Stop isolated test system
         if: always()
