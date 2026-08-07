@@ -35,8 +35,8 @@ jobs:
             sudo modprobe "$module"
           done
 
-          sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
-          sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+          sudo update-alternatives --set iptables /usr/sbin/iptables-nft
+          sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-nft
 
           for command in iptables ip6tables; do
             sudo "$command" -w 10 -t filter -A OUTPUT -o lo -j ACCEPT
