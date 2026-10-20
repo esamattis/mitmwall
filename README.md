@@ -93,6 +93,23 @@ the system trust store with `update-ca-certificates`.
 
 The scripts can be also used for upgrading mitmwall.
 
+## Uninstall
+
+```console
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/mitmwall/main/uninstall.sh)"
+```
+
+Or, from a local checkout:
+
+```console
+sudo ./uninstall.sh
+```
+
+Uninstalling stops and disables the service, removes the firewall rules,
+`/opt/mitmwall`, the systemd unit, the mitmproxy CA certificate, the managed
+environment variables, and the `mitmwall` user. `/etc/mitmwall` is preserved so
+rules and configuration survive a reinstall.
+
 
 ## Usage
 

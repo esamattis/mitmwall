@@ -25,7 +25,6 @@ environment_file=/etc/environment
 profile_file=/etc/profile.d/mitmwall.sh
 zshenv_file=/etc/zsh/zshenv
 
-scriptdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 tmpdir=$(mktemp -d)
 trap 'rm -rf "$tmpdir"' EXIT
 
