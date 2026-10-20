@@ -155,6 +155,16 @@
 #
 # ──────────────────────────────────────────────────────────────────────────────
 
+[[allow]]
+domain = "chatgpt.com"
+methods = "ANY"
+
+[[allow]]
+domain = "chatgpt.com"
+methods = ["POST"]
+pathname_pattern = "/backend-api/codex/responses"
+stream = true
+
 # Allow GETs
 [[allow]]
 domain = "github.com"
