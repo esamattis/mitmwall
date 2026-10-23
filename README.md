@@ -1,3 +1,8 @@
+There is now a Rust port with better Web UI and massively reduced memory usage
+
+https://github.com/esamattis/exwall
+
+
 # mitmwall
 
 mitmwall is an egress Web Application Firewall (WAF) for Ubuntu. It combines
